@@ -13,9 +13,8 @@ Execução:
 import logging
 import sys
 
-from src.application.agent_service import executar_teste_conexao
+from src.application.agent_service import executar_grafo
 from src.settings import get_settings
-
 
 def configurar_logging() -> None:
     """
@@ -46,7 +45,7 @@ def main() -> None:
     logger.info("Ambiente: %s | Banco: %s", settings.app_env, settings.mongodb_database)
 
     try:
-        executar_teste_conexao()
+        executar_grafo()
     except Exception as exc:
         logger.error("Erro fatal na execução: %s", str(exc))
         sys.exit(1)
