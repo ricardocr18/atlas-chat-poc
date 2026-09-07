@@ -1,41 +1,46 @@
 """
 nodes/cataloging_node.py
 --------------------------
-Terceiro nó do grafo — gera os metadados estruturados de catálogo.
+Terceiro nó do grafo — gera metadados estruturados via LLM OpenAI.
 
-Responsabilidade: receber o JSON validado e produzir os metadados
-estruturados para serem salvos na collection
-componentes_catalogados_metadados do MongoDB.
+Fase 2: extraía metadados diretamente dos campos do JSON.
+Fase 3: chama a LLM OpenAI para gerar metadados enriquecidos
+        em formato JSON estruturado, com classificações e sugestões
+        que vão além do que está explícito nos dados de entrada.
 
-Diferença em relação ao documentation_node:
-  - documentation_node → gera texto descritivo (prévia legível)
-  - cataloging_node    → gera metadados estruturados (dados para busca,
-                          filtros, relatórios e integração com outros sistemas)
+Diferença entre os dois nós de geração:
+  documentation_node → pede texto narrativo (leitura humana)
+  cataloging_node    → pede JSON estruturado (leitura de máquina)
 
-Estado atual (Fase 2): extrai e estrutura metadados MOCKADOS
-diretamente do JSON de entrada.
-
-Fase 3: chamará a LLM OpenAI para enriquecer os metadados,
-detectar padrões, sugerir tags adicionais e classificar
-o componente de forma mais inteligente.
+Por isso o prompt de catalogação instrui a LLM a retornar
+APENAS JSON válido, que é então parseado e salvo no MongoDB.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from src.application.agents.documentacao.prompts import (
+    SYSTEM_CATALOGACAO,
+    montar_prompt_catalogacao,
+)
 from src.application.agents.documentacao.state import DocumentacaoState
+from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def _gerar_metadados_mockados(json_entrada: dict[str, Any]) -> dict[str, Any]:
+def _chamar_llm_catalogacao(json_entrada: dict[str, Any]) -> dict[str, Any]:
     """
-    Extrai e estrutura os metadados do componente a partir do JSON.
+    Chama a LLM OpenAI para gerar os metadados estruturados de catálogo.
 
-    Na Fase 3 esta função será enriquecida com análise da LLM,
-    que poderá detectar padrões no repositório, sugerir tags,
-    classificar a maturidade do componente, etc.
+    Diferente do documentation_node, aqui a LLM é instruída a retornar
+    JSON válido — que é parseado e usado diretamente como documento
+    a ser salvo na collection componentes_catalogados_metadados.
 
     Args:
         json_entrada: JSON normalizado do inventário
@@ -44,93 +49,75 @@ def _gerar_metadados_mockados(json_entrada: dict[str, Any]) -> dict[str, Any]:
         dict estruturado no formato da collection
         componentes_catalogados_metadados
     """
-    application = json_entrada.get("application", {})
-    team = json_entrada.get("team", {})
-    people = json_entrada.get("people", {})
+    settings = get_settings()
     processing = json_entrada.get("processing", {})
-    devconsole = json_entrada.get("devconsole", {})
-    gitlab = json_entrada.get("gitlab", {})
-    sources = json_entrada.get("sources", {})
 
-    # Tags geradas automaticamente — na Fase 3 a LLM sugerirá mais
-    tags = [
-        application.get("tipo_aplicacao", ""),
-        application.get("categoria_aplicacao", ""),
-        application.get("environment", "").lower(),
-        devconsole.get("cloud_provider", ""),
-        team.get("tribo", "").lower().replace(" ", "-"),
+    # --- Inicializa o cliente OpenAI via LangChain ---
+    llm = ChatOpenAI(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        temperature=settings.openai_temperature,
+    )
+
+    # --- Monta as mensagens do prompt ---
+    mensagens = [
+        SystemMessage(content=SYSTEM_CATALOGACAO),
+        HumanMessage(content=montar_prompt_catalogacao(json_entrada)),
     ]
-    tags = [t for t in tags if t]  # remove vazios
 
-    return {
-        # --- Identificação ---
-        "event_id": processing.get("event_id"),
-        "transaction_id": processing.get("transaction_id"),
-        "component_name": application.get("component_name"),
-        "application_name": application.get("application_name"),
+    logger.info(
+        "[cataloging_node] Chamando LLM '%s' para gerar metadados...",
+        settings.openai_model,
+    )
 
-        # --- Classificação ---
-        "tipo_aplicacao": application.get("tipo_aplicacao"),
-        "categoria_aplicacao": application.get("categoria_aplicacao"),
-        "criticidade": devconsole.get("criticality"),
-        "cloud_provider": devconsole.get("cloud_provider"),
-        "tags": tags,
+    # --- Chama a LLM ---
+    resposta = llm.invoke(mensagens)
+    texto_retornado = resposta.content.strip()
 
-        # --- Time e Pessoas ---
-        "team_id": team.get("team_id"),
-        "time_responsavel": team.get("time_responsavel"),
-        "projeto": team.get("projeto"),
-        "tribo": team.get("tribo"),
-        "tech_leads": people.get("tech_leads", []),
-        "aprovadores": people.get("aprovadores", []),
-        "arquitetos": people.get("arquitetos", []),
+    logger.info(
+        "[cataloging_node] ✓ LLM respondeu — parseando JSON retornado..."
+    )
 
-        # --- Repositório ---
-        "repository": application.get("repository"),
-        "default_branch": application.get("default_branch"),
-        "branch_count": gitlab.get("branch_count"),
-        "gitlab_host": gitlab.get("host"),
+    # --- Parseia o JSON retornado pela LLM ---
+    # Remove possíveis blocos de markdown caso a LLM ignore a instrução
+    if texto_retornado.startswith("```"):
+        linhas = texto_retornado.split("\n")
+        texto_retornado = "\n".join(linhas[1:-1])
 
-        # --- Status ---
-        "status_aplicacao": application.get("status_aplicacao"),
-        "environment": application.get("environment"),
-        "version": devconsole.get("version"),
+    try:
+        metadados = json.loads(texto_retornado)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM retornou JSON inválido: {str(exc)}\n"
+            f"Conteúdo retornado: {texto_retornado[:200]}..."
+        ) from exc
 
-        # --- Fontes de dados ---
-        "fontes": {
-            "devconsole": sources.get("devconsole"),
-            "cmdb": sources.get("cmdb"),
-            "gitlab": sources.get("gitlab"),
-        },
+    # --- Adiciona campos de rastreabilidade ---
+    metadados["catalogado_em"] = datetime.now(timezone.utc).isoformat()
+    metadados["catalogado_por"] = settings.openai_model
+    metadados["event_id"] = processing.get("event_id")
+    metadados["transaction_id"] = processing.get("transaction_id")
+    metadados["data_evento"] = processing.get("event_date")
+    metadados["tokens_utilizados"] = resposta.usage_metadata
 
-        # --- Rastreabilidade ---
-        "tipo_evento": processing.get("event_type"),
-        "data_evento": processing.get("event_date"),
-        "catalogado_em": datetime.now(timezone.utc).isoformat(),
-        "catalogado_por": "mock",  # Fase 3: será "openai/gpt-4o"
-    }
+    return metadados
 
 
 def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera os metadados estruturados de catálogo do componente.
-
-    Lê o json_entrada do estado, estrutura os metadados
-    e os escreve no estado para o persistence_node salvar
-    na collection correta.
+    Gera os metadados estruturados de catálogo via LLM OpenAI.
 
     Args:
         state: Estado atual com json_entrada validado e
                previa_documentacao já gerada
 
     Returns:
-        dict com metadados_catalogo preenchido
+        dict com metadados_catalogo preenchido pela LLM
     """
     logger.info("-" * 55)
-    logger.info("[cataloging_node] Gerando metadados de catálogo")
+    logger.info("[cataloging_node] Gerando metadados via LLM OpenAI")
     logger.info("-" * 55)
 
-    # Se houve erro em nó anterior, não processa
     if state.get("status_final") == "erro":
         logger.warning(
             "[cataloging_node] ⚠ Erro detectado no estado — pulando catalogação"
@@ -141,23 +128,23 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
     erros = list(state.get("erros", []))
 
     try:
-        metadados = _gerar_metadados_mockados(json_entrada)
+        metadados = _chamar_llm_catalogacao(json_entrada)
 
         logger.info(
             "[cataloging_node] ✓ Metadados gerados para: '%s'",
             metadados.get("component_name"),
         )
         logger.info(
-            "[cataloging_node] ✓ Criticidade: '%s' | Cloud: '%s'",
-            metadados.get("criticidade"),
-            metadados.get("cloud_provider"),
+            "[cataloging_node] ✓ Maturidade: '%s' | Documentação: '%s'",
+            metadados.get("classificacao_maturidade"),
+            metadados.get("nivel_documentacao"),
         )
         logger.info(
             "[cataloging_node] ✓ Tags geradas: %s",
             metadados.get("tags"),
         )
         logger.info(
-            "[cataloging_node] ✓ Catalogado por: '%s' (Fase 3: será OpenAI)",
+            "[cataloging_node] ✓ Catalogado por: '%s'",
             metadados.get("catalogado_por"),
         )
         logger.info(
@@ -171,7 +158,7 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
         }
 
     except Exception as exc:
-        erro = f"Erro ao gerar metadados: {str(exc)}"
+        erro = f"Erro ao chamar LLM para catalogação: {str(exc)}"
         logger.error("[cataloging_node] ✗ %s", erro)
         erros.append(erro)
         return {

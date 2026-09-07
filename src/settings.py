@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_log_level: str = "INFO"
 
+    # --- OpenAI ---
+    # Chave de API da OpenAI — obrigatória na Fase 3
+    # Nunca versionar este valor no git — sempre via .env
+    openai_api_key: str
+    openai_model: str = "gpt-4o-mini"
+    openai_temperature: float = 0.3
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

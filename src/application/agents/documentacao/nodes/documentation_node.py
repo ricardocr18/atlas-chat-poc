@@ -1,41 +1,47 @@
 """
 nodes/documentation_node.py
 -----------------------------
-Segundo nó do grafo — gera a prévia de documentação do componente.
+Segundo nó do grafo — gera a prévia de documentação via LLM OpenAI.
 
-Responsabilidade: receber o JSON validado e produzir um documento
-de prévia estruturado para ser salvo na collection
-documentos_gerados_previas do MongoDB.
+Fase 2: gerava documentação mockada extraindo campos do JSON.
+Fase 3: chama a LLM OpenAI via LangChain para gerar documentação
+        rica, contextualizada e tecnicamente precisa.
 
-Estado atual (Fase 2): gera documentação MOCKADA com dados
-extraídos diretamente do JSON de entrada.
+O que muda em relação à Fase 2:
+  - A função _gerar_previa_mockada() foi substituída por _chamar_llm_documentacao()
+  - O campo "gerado_por" agora mostra o modelo real utilizado
+  - O conteúdo gerado é inteligente, não apenas extração de campos
 
-Fase 3: este nó será atualizado para chamar a LLM OpenAI,
-que receberá o JSON como contexto e gerará a documentação
-de forma inteligente e descritiva. A interface do nó
-(entrada/saída de estado) não muda — só o interior.
-
-Separação de responsabilidades:
-  - Este nó APENAS gera a prévia (dict Python)
-  - Ele NÃO salva no MongoDB — isso é responsabilidade
-    exclusiva do persistence_node
+O que NÃO muda:
+  - A interface do nó (entrada/saída de estado) é idêntica
+  - O persistence_node salva da mesma forma
+  - O supervisor_node valida da mesma forma
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from src.application.agents.documentacao.prompts import (
+    SYSTEM_DOCUMENTACAO,
+    montar_prompt_documentacao,
+)
 from src.application.agents.documentacao.state import DocumentacaoState
+from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def _gerar_previa_mockada(json_entrada: dict[str, Any]) -> dict[str, Any]:
+def _chamar_llm_documentacao(json_entrada: dict[str, Any]) -> dict[str, Any]:
     """
-    Gera uma prévia de documentação estruturada a partir do JSON.
+    Chama a LLM OpenAI para gerar a prévia de documentação.
 
-    Na Fase 3 esta função será substituída por uma chamada
-    à LLM OpenAI via LangChain.
+    Utiliza LangChain como camada de abstração sobre a OpenAI API.
+    O SystemMessage define o papel da LLM, o HumanMessage fornece
+    os dados do componente e a instrução de geração.
 
     Args:
         json_entrada: JSON normalizado do inventário
@@ -43,39 +49,47 @@ def _gerar_previa_mockada(json_entrada: dict[str, Any]) -> dict[str, Any]:
     Returns:
         dict estruturado no formato da collection documentos_gerados_previas
     """
+    settings = get_settings()
     application = json_entrada.get("application", {})
-    team = json_entrada.get("team", {})
-    people = json_entrada.get("people", {})
     processing = json_entrada.get("processing", {})
-    devconsole = json_entrada.get("devconsole", {})
-    gitlab = json_entrada.get("gitlab", {})
 
-    component_name = application.get("component_name", "N/A")
-    app_name = application.get("application_name", "N/A")
-
-    # Descrição mockada — na Fase 3 será gerada pela LLM
-    descricao = (
-        f"O componente {component_name} é uma "
-        f"{application.get('tipo_aplicacao', 'aplicação')} "
-        f"{application.get('categoria_aplicacao', '')} "
-        f"de criticidade {devconsole.get('criticality', 'N/A')}, "
-        f"pertencente ao {team.get('projeto', 'N/A')} "
-        f"da {team.get('tribo', 'N/A')}. "
-        f"Desenvolvida pelo {team.get('time_responsavel', 'N/A')}, "
-        f"a aplicação está {application.get('status_aplicacao', 'N/A')} "
-        f"no ambiente {application.get('environment', 'N/A')} "
-        f"e hospedada no repositório {application.get('repository', 'N/A')}. "
-        f"O repositório possui {gitlab.get('branch_count', 0)} branches "
-        f"e está na versão {devconsole.get('version', 'N/A')}."
+    # --- Inicializa o cliente OpenAI via LangChain ---
+    llm = ChatOpenAI(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        temperature=settings.openai_temperature,
     )
+
+    # --- Monta as mensagens do prompt ---
+    mensagens = [
+        SystemMessage(content=SYSTEM_DOCUMENTACAO),
+        HumanMessage(content=montar_prompt_documentacao(json_entrada)),
+    ]
+
+    logger.info(
+        "[documentation_node] Chamando LLM '%s' para gerar documentação...",
+        settings.openai_model,
+    )
+
+    # --- Chama a LLM ---
+    resposta = llm.invoke(mensagens)
+    texto_gerado = resposta.content
+
+    logger.info(
+        "[documentation_node] ✓ LLM respondeu — %d caracteres gerados",
+        len(texto_gerado),
+    )
+
+    # --- Estrutura o retorno no formato da collection ---
+    people = json_entrada.get("people", {})
 
     return {
         "event_id": processing.get("event_id"),
         "transaction_id": processing.get("transaction_id"),
-        "component_name": component_name,
-        "application_name": app_name,
-        "titulo": f"{component_name} — Prévia de Documentação",
-        "descricao_gerada": descricao,
+        "component_name": application.get("component_name"),
+        "application_name": application.get("application_name"),
+        "titulo": f"{application.get('component_name')} — Prévia de Documentação",
+        "descricao_gerada": texto_gerado,
         "tipo_aplicacao": application.get("tipo_aplicacao"),
         "environment": application.get("environment"),
         "repository": application.get("repository"),
@@ -86,33 +100,29 @@ def _gerar_previa_mockada(json_entrada: dict[str, Any]) -> dict[str, Any]:
             "desenvolvedores": people.get("desenvolvedores", []),
             "qa": people.get("qa", []),
         },
-        "arquivos_detectados": gitlab.get("repository_tree", []),
         "fonte_evento": processing.get("event_id"),
         "tipo_evento": processing.get("event_type"),
         "data_evento": processing.get("event_date"),
         "gerado_em": datetime.now(timezone.utc).isoformat(),
-        "gerado_por": "mock",  # Fase 3: será "openai/gpt-4o"
+        "gerado_por": settings.openai_model,
+        "tokens_utilizados": resposta.usage_metadata,
     }
 
 
 def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera a prévia de documentação do componente.
-
-    Lê o json_entrada do estado, gera a prévia estruturada
-    e a escreve de volta no estado para o próximo nó usar.
+    Gera a prévia de documentação do componente via LLM OpenAI.
 
     Args:
         state: Estado atual com json_entrada validado
 
     Returns:
-        dict com previa_documentacao preenchida
+        dict com previa_documentacao preenchida pela LLM
     """
     logger.info("-" * 55)
-    logger.info("[documentation_node] Gerando prévia de documentação")
+    logger.info("[documentation_node] Gerando prévia via LLM OpenAI")
     logger.info("-" * 55)
 
-    # Se houve erro no nó anterior, não processa
     if state.get("status_final") == "erro":
         logger.warning(
             "[documentation_node] ⚠ Erro detectado no estado — pulando geração"
@@ -123,18 +133,14 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
     erros = list(state.get("erros", []))
 
     try:
-        previa = _gerar_previa_mockada(json_entrada)
+        previa = _chamar_llm_documentacao(json_entrada)
 
         logger.info(
             "[documentation_node] ✓ Prévia gerada para: '%s'",
             previa.get("component_name"),
         )
         logger.info(
-            "[documentation_node] ✓ Título: '%s'",
-            previa.get("titulo"),
-        )
-        logger.info(
-            "[documentation_node] ✓ Gerado por: '%s' (Fase 3: será OpenAI)",
+            "[documentation_node] ✓ Gerado por: '%s'",
             previa.get("gerado_por"),
         )
         logger.info(
@@ -148,7 +154,7 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
         }
 
     except Exception as exc:
-        erro = f"Erro ao gerar prévia: {str(exc)}"
+        erro = f"Erro ao chamar LLM para documentação: {str(exc)}"
         logger.error("[documentation_node] ✗ %s", erro)
         erros.append(erro)
         return {
