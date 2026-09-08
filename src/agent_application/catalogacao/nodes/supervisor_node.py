@@ -20,7 +20,7 @@ um novo componente foi documentado e está pronto para curadoria.
 import logging
 from typing import Any
 
-from src.application.agents.documentacao.state import DocumentacaoState
+from src.agent_application.state import DocumentacaoState
 
 logger = logging.getLogger(__name__)
 

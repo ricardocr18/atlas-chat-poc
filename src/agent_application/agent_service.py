@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from src.application.agents.documentacao.graph import criar_grafo_documentacao
-from src.application.agents.documentacao.state import criar_estado_inicial
+from src.agent_application.graph import criar_grafo_documentacao
+from src.agent_application.state import criar_estado_inicial
 
 logger = logging.getLogger(__name__)
 

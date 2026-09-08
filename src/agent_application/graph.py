@@ -33,12 +33,12 @@ import logging
 
 from langgraph.graph import END, START, StateGraph
 
-from src.application.agents.documentacao.nodes.cataloging_node import cataloging_node
-from src.application.agents.documentacao.nodes.documentation_node import documentation_node
-from src.application.agents.documentacao.nodes.input_node import input_node
-from src.application.agents.documentacao.nodes.persistence_node import persistence_node
-from src.application.agents.documentacao.nodes.supervisor_node import supervisor_node
-from src.application.agents.documentacao.state import DocumentacaoState
+from src.agent_application.catalogacao.nodes.cataloging_node import cataloging_node
+from src.agent_application.catalogacao.nodes.documentation_node import documentation_node
+from src.agent_application.catalogacao.nodes.input_node import input_node
+from src.agent_application.catalogacao.nodes.persistence_node import persistence_node
+from src.agent_application.catalogacao.nodes.supervisor_node import supervisor_node
+from src.agent_application.state import DocumentacaoState
 
 logger = logging.getLogger(__name__)
 

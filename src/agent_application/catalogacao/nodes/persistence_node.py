@@ -29,7 +29,7 @@ Importante: este nó usa os repositórios da Fase 1 sem alteração.
 import logging
 from typing import Any
 
-from src.application.agents.documentacao.state import DocumentacaoState
+from src.agent_application.state import DocumentacaoState
 from src.infrastructure.mongodb import (
     ComponentesMetadadosRepository,
     DocumentosPreViasRepository,

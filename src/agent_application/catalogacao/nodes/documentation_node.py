@@ -25,11 +25,11 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from src.application.agents.documentacao.prompts import (
+from src.agent_application.prompts.prompts_catalog_document import (
     SYSTEM_DOCUMENTACAO,
     montar_prompt_documentacao,
 )
-from src.application.agents.documentacao.state import DocumentacaoState
+from src.agent_application.state import DocumentacaoState
 from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
