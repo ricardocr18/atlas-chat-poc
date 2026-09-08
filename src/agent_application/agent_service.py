@@ -1,15 +1,21 @@
 """
-application/agent_service.py
-------------------------------
+agent_application/agent_service.py
+-------------------------------------
 Orquestrador da aplicação — ponto de entrada do grafo LangGraph.
 
-Fase 1: executava um teste de conexão simples com o MongoDB.
-Fase 2: executa o grafo LangGraph completo com dados mockados.
+Histórico de evolução:
+  Fase 1: executava teste de conexão simples com MongoDB
+  Fase 2: executava o grafo com JSON mockado direto no código
+  Fase 3: executava o grafo lendo JSON de arquivo local
+  Fase 4: suporta três modos de entrada controlados por INPUT_MODE:
+            file       → lê mock_input/component_event.json
+            mock_kafka → consumer Kafka simulado com JSON local
+            kafka      → consumer Kafka real (broker da Sicredi)
 
 Responsabilidades:
-  1. Carregar o JSON de entrada (mock por ora, Kafka na Fase 4)
-  2. Criar o estado inicial do grafo
-  3. Compilar e executar o grafo
+  1. Verificar o modo de entrada configurado (INPUT_MODE)
+  2. Direcionar para o mecanismo correto de recebimento do JSON
+  3. Executar o grafo LangGraph com o JSON recebido
   4. Exibir o resultado final
 """
 
@@ -20,19 +26,20 @@ from typing import Any
 
 from src.agent_application.graph import criar_grafo_documentacao
 from src.agent_application.state import criar_estado_inicial
+from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Caminho do JSON mockado — na Fase 4 será substituído pelo consumer Kafka
-MOCK_INPUT_PATH = Path(__file__).parent.parent.parent / "mock_input" / "component_event.json"
+# Caminho do JSON mockado — usado nos modos file e mock_kafka
+MOCK_INPUT_PATH = (
+    Path(__file__).parent.parent.parent / "mock_input" / "component_event.json"
+)
 
 
-def _carregar_json_entrada() -> dict[str, Any]:
+def _carregar_json_arquivo() -> dict[str, Any]:
     """
-    Carrega o JSON de entrada do arquivo mock.
-
-    Na Fase 4 esta função será substituída pelo consumer Kafka
-    que receberá o JSON do tópico atlas-processamento-assincrono-dados.
+    Carrega o JSON de entrada do arquivo mock local.
+    Usado quando INPUT_MODE=file.
     """
     if not MOCK_INPUT_PATH.exists():
         raise FileNotFoundError(
@@ -46,32 +53,23 @@ def _carregar_json_entrada() -> dict[str, Any]:
         return json.load(f)
 
 
-def executar_grafo() -> None:
+def _processar_mensagem(json_entrada: dict[str, Any]) -> None:
     """
-    Executa o grafo LangGraph de documentação e catalogação.
+    Callback acionado pelo consumer Kafka ao receber uma mensagem.
+
+    Passado como callback para o consumer — ele a chama com o JSON
+    deserializado cada vez que uma mensagem chega no tópico.
+    Também chamada diretamente no modo file.
     """
-    logger.info("=" * 60)
-    logger.info("ATLAS DOCUMENTACAO AGENT — FASE 2")
-    logger.info("Grafo LangGraph com nós mockados")
-    logger.info("=" * 60)
-
-    # --- 1. Carrega o JSON de entrada ---
-    json_entrada = _carregar_json_entrada()
-
     component_name = (
         json_entrada.get("application", {}).get("component_name", "N/A")
     )
     logger.info("Componente a processar: '%s'", component_name)
 
-    # --- 2. Cria o estado inicial ---
     estado_inicial = criar_estado_inicial(json_entrada)
-    logger.info("Estado inicial criado — iniciando grafo")
-
-    # --- 3. Compila e executa o grafo ---
     grafo = criar_grafo_documentacao()
     estado_final = grafo.invoke(estado_inicial)
 
-    # --- 4. Exibe o resultado final ---
     logger.info("")
     logger.info("=" * 60)
     logger.info("RESULTADO FINAL DO GRAFO")
@@ -90,3 +88,36 @@ def executar_grafo() -> None:
         logger.info("Erros        : nenhum")
 
     logger.info("=" * 60)
+
+
+def executar_grafo() -> None:
+    """
+    Ponto de entrada principal — seleciona o modo de operação.
+
+    Lê INPUT_MODE do .env e direciona para o mecanismo correto:
+      file       → carrega JSON local e processa uma vez
+      mock_kafka → simula consumer Kafka com JSON local
+      kafka      → consumer Kafka real (loop contínuo)
+    """
+    settings = get_settings()
+    modo = settings.input_mode.lower()
+
+    logger.info("=" * 60)
+    logger.info("ATLAS DOCUMENTACAO AGENT — FASE 4")
+    logger.info("Modo de entrada: %s", modo.upper())
+    logger.info("=" * 60)
+
+    if modo == "file":
+        logger.info("Lendo JSON do arquivo local...")
+        json_entrada = _carregar_json_arquivo()
+        _processar_mensagem(json_entrada)
+
+    elif modo in ("mock_kafka", "kafka"):
+        from src.infrastructure.kafka import iniciar_consumer
+        iniciar_consumer(_processar_mensagem)
+
+    else:
+        raise ValueError(
+            f"INPUT_MODE='{modo}' inválido.\n"
+            "Valores aceitos: 'file', 'mock_kafka', 'kafka'"
+        )

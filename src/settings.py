@@ -38,10 +38,26 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_temperature: float = 0.3
 
+    # --- Modo de entrada ---
+    # Controla de onde o agente recebe o JSON do inventário:
+    #   file       → lê mock_input/component_event.json (Fases 1-3)
+    #   mock_kafka → simula Kafka com JSON local (Fase 4 dev)
+    #   kafka      → consumer Kafka real (Fase 4 produção)
+    input_mode: str = "file"
+
+    # --- Kafka ---
+    # Preenchido quando tivermos acesso ao broker da Sicredi.
+    # Em modo file ou mock_kafka, esses valores não são usados
+    # para conexão real — apenas referenciados em logs.
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_topic: str = "atlas-processamento-assincrono-dados"
+    kafka_group_id: str = "atlas-documentacao-agent-group"
+    kafka_auto_offset_reset: str = "earliest"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        case_sensitive=False,  # MONGODB_URI == mongodb_uri
+        case_sensitive=False,
     )
 
 
