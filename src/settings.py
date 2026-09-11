@@ -5,10 +5,6 @@ Gerenciamento centralizado de configurações da aplicação.
 
 Utiliza pydantic-settings para carregar variáveis do arquivo .env
 automaticamente, com tipagem e validação garantidas pelo Pydantic.
-
-Padrão: qualquer parte do sistema importa `get_settings()` e nunca
-acessa `os.environ` diretamente — isso mantém a configuração
-rastreável e testável.
 """
 
 from functools import lru_cache
@@ -18,9 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """
     Configurações centrais da aplicação.
-
     Cada campo mapeia diretamente para uma variável de ambiente.
-    O Pydantic valida os tipos automaticamente na inicialização.
     """
 
     # --- MongoDB ---
@@ -32,27 +26,32 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
 
     # --- OpenAI ---
-    # Chave de API da OpenAI — obrigatória na Fase 3
-    # Nunca versionar este valor no git — sempre via .env
     openai_api_key: str
     openai_model: str = "gpt-4o-mini"
     openai_temperature: float = 0.3
 
     # --- Modo de entrada ---
-    # Controla de onde o agente recebe o JSON do inventário:
-    #   file       → lê mock_input/component_event.json (Fases 1-3)
-    #   mock_kafka → simula Kafka com JSON local (Fase 4 dev)
-    #   kafka      → consumer Kafka real (Fase 4 produção)
+    # file       → lê mock_input/component_event.json
+    # mock_kafka → simula Kafka com JSON local
+    # kafka      → consumer Kafka real
     input_mode: str = "file"
 
     # --- Kafka ---
-    # Preenchido quando tivermos acesso ao broker da Sicredi.
-    # Em modo file ou mock_kafka, esses valores não são usados
-    # para conexão real — apenas referenciados em logs.
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_topic: str = "atlas-processamento-assincrono-dados"
     kafka_group_id: str = "atlas-documentacao-agent-group"
     kafka_auto_offset_reset: str = "earliest"
+
+    # --- PostgreSQL ---
+    # Local: localhost:5432 com usuário postgres
+    # Sicredi VM: atlas-documentacao-agent-pgdb.dev-sicredi.in
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_database: str = "atlas_documentacao_agente"
+    postgres_user: str = "postgres"
+    postgres_password: str
+    postgres_sslmode: str = "prefer"
+    postgres_connect_timeout: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -65,9 +64,6 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """
     Retorna a instância única de Settings (singleton via cache).
-
-    O @lru_cache garante que o arquivo .env é lido apenas uma vez
-    durante o ciclo de vida da aplicação, evitando leituras repetidas
-    de disco a cada chamada.
+    O @lru_cache garante que o .env é lido apenas uma vez.
     """
     return Settings()
