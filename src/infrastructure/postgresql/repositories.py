@@ -3,20 +3,26 @@ infrastructure/postgresql/repositories.py
 -------------------------------------------
 Repositório para a tabela objetos_gerados_previas no PostgreSQL.
 
+Fase 6: adicionados os campos versao, versao_ativa, motivo_reprovacao
+        e avaliado_por, preparando a estrutura para suportar o
+        versionamento de tentativas quando o agente de classificação
+        existir. A LÓGICA de versionamento (incrementar versao,
+        marcar versao_ativa=false em registros antigos) NÃO é
+        implementada nesta fase — apenas a estrutura da tabela.
+
 Por que usamos a tabela objetos_gerados_previas?
   O DevConsole da Sicredi já criou esta tabela no banco
-  atlas_documentacao_agent com 1 coluna. Expandimos ela
-  com as colunas necessárias para o pré-cadastro do componente,
-  mantendo compatibilidade com o que já existe.
+  atlas_documentacao_agent. Expandimos ela com as colunas
+  necessárias, mantendo compatibilidade com o que já existe.
 
 Padrão Repository: mesma abordagem do MongoDB.
   O postgres_node nunca executa SQL diretamente — sempre
   passa por este repositório.
 
-CREATE TABLE IF NOT EXISTS:
-  Garante idempotência — se a tabela já existir com as colunas,
-  não faz nada. Se existir com menos colunas (como na Sicredi),
-  o ALTER TABLE adiciona as que faltam.
+CREATE TABLE IF NOT EXISTS + ALTER TABLE:
+  Garante idempotência — se a tabela já existir sem os novos
+  campos (como no ambiente que já estava em uso desde a Fase 5),
+  o ALTER TABLE adiciona os campos que faltam sem apagar dados.
 """
 
 import logging
@@ -30,30 +36,45 @@ logger = logging.getLogger(__name__)
 TABELA = "objetos_gerados_previas"
 
 # SQL de criação da tabela — usa IF NOT EXISTS para idempotência
-# Compatível com a tabela que já existe no banco da Sicredi
+# Já inclui os campos de versionamento desde a criação (ambientes novos)
 SQL_CRIAR_TABELA = f"""
 CREATE TABLE IF NOT EXISTS {TABELA} (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id            VARCHAR(100),
-    transaction_id      VARCHAR(100),
-    component_name      VARCHAR(200) NOT NULL,
-    application_name    VARCHAR(200),
-    team_id             VARCHAR(100),
-    time_responsavel    VARCHAR(200),
-    projeto             VARCHAR(200),
-    tribo               VARCHAR(200),
-    tipo_aplicacao      VARCHAR(100),
-    categoria_aplicacao VARCHAR(100),
-    criticidade         VARCHAR(50),
-    environment         VARCHAR(50),
-    status_aplicacao    VARCHAR(50),
-    repository          VARCHAR(500),
-    id_mongodb_previa   VARCHAR(100),
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id             VARCHAR(100),
+    transaction_id       VARCHAR(100),
+    component_name       VARCHAR(200) NOT NULL,
+    application_name     VARCHAR(200),
+    team_id              VARCHAR(100),
+    time_responsavel     VARCHAR(200),
+    projeto              VARCHAR(200),
+    tribo                VARCHAR(200),
+    tipo_aplicacao       VARCHAR(100),
+    categoria_aplicacao  VARCHAR(100),
+    criticidade          VARCHAR(50),
+    environment          VARCHAR(50),
+    status_aplicacao     VARCHAR(50),
+    repository           VARCHAR(500),
+    id_mongodb_previa    VARCHAR(100),
     id_mongodb_metadados VARCHAR(100),
-    status_cadastro     VARCHAR(50) DEFAULT 'pendente_aprovacao',
-    criado_em           TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    atualizado_em       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    status_cadastro      VARCHAR(50) DEFAULT 'pendente_aprovacao',
+    versao               INTEGER DEFAULT 1,
+    versao_ativa         BOOLEAN DEFAULT TRUE,
+    motivo_reprovacao    TEXT,
+    avaliado_por         VARCHAR(100),
+    criado_em            TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    atualizado_em        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+"""
+
+# ALTER TABLE idempotente — garante que tabelas criadas ANTES da Fase 6
+# (como a do ambiente Sicredi, criada na Fase 5) recebam os novos campos
+# sem perder os dados já existentes.
+SQL_ADICIONAR_CAMPOS_FASE6 = f"""
+ALTER TABLE {TABELA}
+    ADD COLUMN IF NOT EXISTS versao INTEGER DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS versao_ativa BOOLEAN DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS motivo_reprovacao TEXT,
+    ADD COLUMN IF NOT EXISTS avaliado_por VARCHAR(100);
 """
 
 SQL_INSERIR = f"""
@@ -75,6 +96,8 @@ INSERT INTO {TABELA} (
     id_mongodb_previa,
     id_mongodb_metadados,
     status_cadastro,
+    versao,
+    versao_ativa,
     criado_em,
     atualizado_em
 ) VALUES (
@@ -95,6 +118,8 @@ INSERT INTO {TABELA} (
     %(id_mongodb_previa)s,
     %(id_mongodb_metadados)s,
     %(status_cadastro)s,
+    %(versao)s,
+    %(versao_ativa)s,
     %(criado_em)s,
     %(atualizado_em)s
 )
@@ -113,10 +138,11 @@ class ObjetosGeradosPreViasRepository:
     """
     Repositório para a tabela objetos_gerados_previas.
 
-    Responsável por:
-    - Garantir que a tabela existe (criar se necessário)
-    - Inserir o pré-cadastro do componente
-    - Buscar registros por event_id
+    Fase 6: os campos versao, versao_ativa, motivo_reprovacao e
+            avaliado_por existem na tabela mas a lógica de
+            versionamento (múltiplas tentativas) ainda não está
+            implementada. Todo registro inserido hoje nasce com
+            versao=1 e versao_ativa=true.
     """
 
     def __init__(self, conn: PgConnection) -> None:
@@ -125,15 +151,19 @@ class ObjetosGeradosPreViasRepository:
 
     def garantir_tabela(self) -> None:
         """
-        Cria a tabela se não existir.
+        Cria a tabela se não existir, e adiciona os campos da Fase 6
+        caso a tabela já exista de uma fase anterior.
 
-        Chamado uma vez ao inicializar o postgres_node.
-        Idempotente — seguro chamar múltiplas vezes.
+        Seguro chamar múltiplas vezes — nunca apaga dados.
         """
         with self._conn.cursor() as cur:
             cur.execute(SQL_CRIAR_TABELA)
+            cur.execute(SQL_ADICIONAR_CAMPOS_FASE6)
         self._conn.commit()
-        logger.info("Tabela '%s' verificada/criada com sucesso.", TABELA)
+        logger.info(
+            "Tabela '%s' verificada/atualizada com sucesso (campos Fase 6 garantidos).",
+            TABELA,
+        )
 
     def inserir(
         self,
@@ -145,14 +175,8 @@ class ObjetosGeradosPreViasRepository:
         """
         Insere o pré-cadastro do componente na tabela.
 
-        Combina dados dos metadados e da prévia gerados pelos
-        nós anteriores do grafo para montar o registro completo.
-
-        Args:
-            metadados: dict gerado pelo cataloging_node
-            previa: dict gerado pelo documentation_node
-            id_mongodb_previa: ID do documento na collection previas
-            id_mongodb_metadados: ID do documento na collection metadados
+        Fase 6: todo registro novo nasce com versao=1 e
+                versao_ativa=true.
 
         Returns:
             str: UUID do registro inserido no PostgreSQL
@@ -177,6 +201,8 @@ class ObjetosGeradosPreViasRepository:
             "id_mongodb_previa": id_mongodb_previa,
             "id_mongodb_metadados": id_mongodb_metadados,
             "status_cadastro": "pendente_aprovacao",
+            "versao": 1,
+            "versao_ativa": True,
             "criado_em": agora,
             "atualizado_em": agora,
         }
@@ -189,7 +215,7 @@ class ObjetosGeradosPreViasRepository:
 
         id_gerado = str(resultado["id"])
         logger.info(
-            "Pré-cadastro inserido em '%s' com ID: %s",
+            "Pré-cadastro inserido em '%s' com ID: %s (versao=1)",
             TABELA,
             id_gerado,
         )
@@ -197,7 +223,7 @@ class ObjetosGeradosPreViasRepository:
 
     def buscar_por_event_id(self, event_id: str) -> dict[str, Any] | None:
         """
-        Busca um pré-cadastro pelo event_id.
+        Busca o registro mais recente de um event_id.
 
         Returns:
             dict com o registro encontrado, ou None se não existir.
@@ -207,8 +233,8 @@ class ObjetosGeradosPreViasRepository:
             resultado = cur.fetchone()
 
         if resultado:
-            logger.info("Pré-cadastro encontrado para event_id: '%s'", event_id)
+            logger.info("Registro encontrado para event_id: '%s'", event_id)
             return dict(resultado)
 
-        logger.warning("Pré-cadastro não encontrado para event_id: '%s'", event_id)
+        logger.warning("Registro não encontrado para event_id: '%s'", event_id)
         return None
