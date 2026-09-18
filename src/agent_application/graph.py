@@ -1,24 +1,28 @@
 """
-agents/documentacao/graph.py
+agent_application/graph.py
 ------------------------------
 Monta e compila o grafo LangGraph do agente de documentação.
 
-Fase 5: adicionado postgres_node entre persistence_node e supervisor_node.
+Fase 7: adicionado repository_fetch_node como primeiro nó, antes do
+        input_node — busca o conteúdo do repositório antes de
+        qualquer validação ou geração via LLM.
 
 Estrutura do grafo:
   START
     ↓
-  input_node          (valida o JSON de entrada)
+  repository_fetch_node  (busca README, árvore de arquivos, manifestos)
     ↓
-  documentation_node  (gera prévia via LLM OpenAI)
+  input_node             (valida se há conteúdo suficiente)
     ↓
-  cataloging_node     (gera metadados via LLM OpenAI)
+  documentation_node     (gera wiki multi-seção via LLM OpenAI)
     ↓
-  persistence_node    (salva nas collections MongoDB)
+  cataloging_node        (gera checklist técnico via LLM OpenAI)
     ↓
-  postgres_node       (salva pré-cadastro no PostgreSQL)
+  persistence_node       (salva nas collections MongoDB)
     ↓
-  supervisor_node     (valida e consolida o resultado)
+  postgres_node          (salva pré-cadastro no PostgreSQL)
+    ↓
+  supervisor_node        (valida e consolida o resultado)
     ↓
   END
 """
@@ -32,6 +36,7 @@ from src.agent_application.catalogacao.nodes.documentation_node import documenta
 from src.agent_application.catalogacao.nodes.input_node import input_node
 from src.agent_application.catalogacao.nodes.persistence_node import persistence_node
 from src.agent_application.catalogacao.nodes.postgres_node import postgres_node
+from src.agent_application.catalogacao.nodes.repository_fetch_node import repository_fetch_node
 from src.agent_application.catalogacao.nodes.supervisor_node import supervisor_node
 from src.agent_application.state import DocumentacaoState
 
@@ -50,6 +55,7 @@ def criar_grafo_documentacao():
     grafo = StateGraph(DocumentacaoState)
 
     # --- Adiciona os nós ---
+    grafo.add_node("repository_fetch_node", repository_fetch_node)
     grafo.add_node("input_node", input_node)
     grafo.add_node("documentation_node", documentation_node)
     grafo.add_node("cataloging_node", cataloging_node)
@@ -58,7 +64,8 @@ def criar_grafo_documentacao():
     grafo.add_node("supervisor_node", supervisor_node)
 
     # --- Define as arestas (fluxo entre os nós) ---
-    grafo.add_edge(START, "input_node")
+    grafo.add_edge(START, "repository_fetch_node")
+    grafo.add_edge("repository_fetch_node", "input_node")
     grafo.add_edge("input_node", "documentation_node")
     grafo.add_edge("documentation_node", "cataloging_node")
     grafo.add_edge("cataloging_node", "persistence_node")
@@ -68,9 +75,10 @@ def criar_grafo_documentacao():
 
     grafo_compilado = grafo.compile()
 
-    logger.info("Grafo compilado com sucesso — 6 nós, fluxo linear")
+    logger.info("Grafo compilado com sucesso — 7 nós, fluxo linear")
     logger.info(
-        "Fluxo: START → input → documentation → cataloging → persistence → postgres → supervisor → END"
+        "Fluxo: START → repository_fetch → input → documentation → "
+        "cataloging → persistence → postgres → supervisor → END"
     )
 
     return grafo_compilado

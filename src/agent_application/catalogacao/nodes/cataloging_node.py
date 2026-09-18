@@ -1,19 +1,15 @@
 """
 nodes/cataloging_node.py
 --------------------------
-Terceiro nó do grafo — gera metadados estruturados via LLM OpenAI.
+Quarto nó do grafo (Fase 7) — gera os metadados técnicos via LLM OpenAI,
+percorrendo o checklist fixo (libs, segurança, bancos, mensageria,
+tecnologia, Sicredi Flow, S3, imagem).
 
-Fase 2: extraía metadados diretamente dos campos do JSON.
-Fase 3: chama a LLM OpenAI para gerar metadados enriquecidos
-        em formato JSON estruturado, com classificações e sugestões
-        que vão além do que está explícito nos dados de entrada.
-
-Diferença entre os dois nós de geração:
-  documentation_node → pede texto narrativo (leitura humana)
-  cataloging_node    → pede JSON estruturado (leitura de máquina)
-
-Por isso o prompt de catalogação instrui a LLM a retornar
-APENAS JSON válido, que é então parseado e salvo no MongoDB.
+Fase 3-6: recebia JSON com metadados de negócio já prontos.
+Fase 7: os campos de negócio (team_id, criticidade, environment,
+        time_responsavel, projeto, tribo, status_aplicacao) NÃO EXISTEM
+        mais na entrada — ficam explicitamente None, pois não podem ser
+        inferidos apenas do código-fonte.
 """
 
 import json
@@ -25,8 +21,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from src.agent_application.prompts.prompts_catalog_document import (
-    SYSTEM_CATALOGACAO,
-    montar_prompt_catalogacao,
+    SYSTEM_CHECKLIST_TECNICO,
+    montar_prompt_checklist_tecnico,
 )
 from src.agent_application.state import DocumentacaoState
 from src.settings import get_settings
@@ -34,88 +30,92 @@ from src.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _chamar_llm_catalogacao(json_entrada: dict[str, Any]) -> dict[str, Any]:
-    """
-    Chama a LLM OpenAI para gerar os metadados estruturados de catálogo.
+def _limpar_json_llm(texto: str) -> str:
+    """Remove blocos de markdown que a LLM às vezes inclui por engano."""
+    texto = texto.strip()
+    if texto.startswith("```"):
+        linhas = texto.split("\n")
+        texto = "\n".join(linhas[1:-1])
+    return texto
 
-    Diferente do documentation_node, aqui a LLM é instruída a retornar
-    JSON válido — que é parseado e usado diretamente como documento
-    a ser salvo na collection componentes_catalogados_metadados.
+
+def _chamar_llm_checklist(repo_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Chama a LLM OpenAI para preencher o checklist técnico do repositório.
 
     Args:
-        json_entrada: JSON normalizado do inventário
+        repo_data: dados buscados pelo repository_fetch_node
 
     Returns:
         dict estruturado no formato da collection
-        componentes_catalogados_metadados
+        componentes_catalogados_metadados, com campos de negócio
+        explicitamente None
     """
     settings = get_settings()
-    processing = json_entrada.get("processing", {})
 
-    # --- Inicializa o cliente OpenAI via LangChain ---
     llm = ChatOpenAI(
         api_key=settings.openai_api_key,
         model=settings.openai_model,
         temperature=settings.openai_temperature,
     )
 
-    # --- Monta as mensagens do prompt ---
     mensagens = [
-        SystemMessage(content=SYSTEM_CATALOGACAO),
-        HumanMessage(content=montar_prompt_catalogacao(json_entrada)),
+        SystemMessage(content=SYSTEM_CHECKLIST_TECNICO),
+        HumanMessage(content=montar_prompt_checklist_tecnico(repo_data)),
     ]
 
     logger.info(
-        "[cataloging_node] Chamando LLM '%s' para gerar metadados...",
+        "[cataloging_node] Chamando LLM '%s' para o checklist técnico...",
         settings.openai_model,
     )
 
-    # --- Chama a LLM ---
     resposta = llm.invoke(mensagens)
-    texto_retornado = resposta.content.strip()
-
-    logger.info(
-        "[cataloging_node] ✓ LLM respondeu — parseando JSON retornado..."
-    )
-
-    # --- Parseia o JSON retornado pela LLM ---
-    # Remove possíveis blocos de markdown caso a LLM ignore a instrução
-    if texto_retornado.startswith("```"):
-        linhas = texto_retornado.split("\n")
-        texto_retornado = "\n".join(linhas[1:-1])
+    texto_limpo = _limpar_json_llm(resposta.content)
 
     try:
-        metadados = json.loads(texto_retornado)
+        checklist = json.loads(texto_limpo)
     except json.JSONDecodeError as exc:
         raise ValueError(
-            f"LLM retornou JSON inválido: {str(exc)}\n"
-            f"Conteúdo retornado: {texto_retornado[:200]}..."
+            f"LLM retornou JSON inválido para o checklist: {str(exc)}\n"
+            f"Conteúdo retornado: {texto_limpo[:200]}..."
         ) from exc
 
-    # --- Adiciona campos de rastreabilidade ---
-    metadados["catalogado_em"] = datetime.now(timezone.utc).isoformat()
-    metadados["catalogado_por"] = settings.openai_model
-    metadados["event_id"] = processing.get("event_id")
-    metadados["transaction_id"] = processing.get("transaction_id")
-    metadados["data_evento"] = processing.get("event_date")
-    metadados["tokens_utilizados"] = resposta.usage_metadata
+    # --- Campos de rastreabilidade ---
+    checklist["event_id"] = repo_data.get("event_id")
+    checklist["repository"] = repo_data.get("repository_url")
+    checklist["repository_owner"] = repo_data.get("owner")
+    checklist["catalogado_em"] = datetime.now(timezone.utc).isoformat()
+    checklist["catalogado_por"] = settings.openai_model
+    checklist["tokens_utilizados"] = resposta.usage_metadata
 
-    return metadados
+    # --- Campos de negócio: explicitamente None (Fase 7) ---
+    # Não existem no repositório de código — dependiam do JSON do
+    # inventário, que não faz mais parte desta entrada.
+    checklist["team_id"] = None
+    checklist["time_responsavel"] = None
+    checklist["projeto"] = None
+    checklist["tribo"] = None
+    checklist["criticidade"] = None
+    checklist["environment"] = None
+    checklist["status_aplicacao"] = None
+    checklist["categoria_aplicacao"] = None
+
+    return checklist
 
 
 def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera os metadados estruturados de catálogo via LLM OpenAI.
+    Gera os metadados técnicos (checklist) do repositório via LLM OpenAI.
 
     Args:
-        state: Estado atual com json_entrada validado e
-               previa_documentacao já gerada
+        state: Estado atual com repo_data validado e secoes_documentacao
+               já geradas
 
     Returns:
         dict com metadados_catalogo preenchido pela LLM
     """
     logger.info("-" * 55)
-    logger.info("[cataloging_node] Gerando metadados via LLM OpenAI")
+    logger.info("[cataloging_node] Gerando checklist técnico via LLM OpenAI")
     logger.info("-" * 55)
 
     if state.get("status_final") == "erro":
@@ -124,32 +124,36 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
         )
         return {"etapa_atual": "cataloging_node"}
 
-    json_entrada = state["json_entrada"]
+    repo_data = state["repo_data"]
     erros = list(state.get("erros", []))
 
     try:
-        metadados = _chamar_llm_catalogacao(json_entrada)
+        metadados = _chamar_llm_checklist(repo_data)
 
         logger.info(
-            "[cataloging_node] ✓ Metadados gerados para: '%s'",
+            "[cataloging_node] ✓ Checklist gerado para: '%s'",
             metadados.get("component_name"),
         )
-        logger.info(
-            "[cataloging_node] ✓ Maturidade: '%s' | Documentação: '%s'",
-            metadados.get("classificacao_maturidade"),
-            metadados.get("nivel_documentacao"),
-        )
-        logger.info(
-            "[cataloging_node] ✓ Tags geradas: %s",
-            metadados.get("tags"),
-        )
+        for item in [
+            "seguranca",
+            "bancos_de_dados",
+            "mensageria",
+            "tecnologia_principal",
+            "uso_sicredi_flow",
+            "uso_s3",
+            "containerizacao",
+        ]:
+            resultado_item = metadados.get(item, {})
+            logger.info(
+                "[cataloging_node]   • %s: %s",
+                item,
+                resultado_item.get("status", "?") if isinstance(resultado_item, dict) else resultado_item,
+            )
         logger.info(
             "[cataloging_node] ✓ Catalogado por: '%s'",
             metadados.get("catalogado_por"),
         )
-        logger.info(
-            "[cataloging_node] ✓ Seguindo para persistence_node"
-        )
+        logger.info("[cataloging_node] ✓ Seguindo para persistence_node")
 
         return {
             "metadados_catalogo": metadados,
@@ -158,7 +162,7 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
         }
 
     except Exception as exc:
-        erro = f"Erro ao chamar LLM para catalogação: {str(exc)}"
+        erro = f"Erro ao gerar checklist técnico: {str(exc)}"
         logger.error("[cataloging_node] ✗ %s", erro)
         erros.append(erro)
         return {

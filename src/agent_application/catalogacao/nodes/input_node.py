@@ -1,20 +1,16 @@
 """
 nodes/input_node.py
 --------------------
-Primeiro nó do grafo — valida e carrega o JSON de entrada.
+Segundo nó do grafo (Fase 7) — valida os dados buscados do repositório.
 
-Responsabilidade única: garantir que o JSON recebido tem
-todos os campos obrigatórios antes de seguir para os próximos nós.
+Fase 1-6: validava campos de um JSON estruturado (team, application...).
+Fase 7: valida se a busca do repositório trouxe o mínimo necessário
+        para gerar documentação com qualidade.
 
-Por que validar aqui?
-  Se o JSON chegar incompleto ou malformado, é muito melhor
-  falhar no primeiro nó com uma mensagem clara do que deixar
-  o erro aparecer no meio do grafo ou pior — salvar dados
-  incompletos no MongoDB.
-
-Na Fase 4 (Kafka): este nó receberá o JSON deserializado
-do tópico atlas-processamento-assincrono-dados. A lógica
-de validação aqui não muda — só muda quem chama este nó.
+Por que validar aqui e não deixar passar direto?
+  Um repositório pode não ter README, não ter manifesto reconhecido,
+  ou a árvore de arquivos pode ter vindo vazia. Nesses casos é melhor
+  avisar cedo do que deixar a LLM gerar documentação sem contexto.
 """
 
 import logging
@@ -24,48 +20,37 @@ from src.agent_application.state import DocumentacaoState
 
 logger = logging.getLogger(__name__)
 
-# Campos obrigatórios que o JSON do inventário deve conter
-CAMPOS_OBRIGATORIOS = [
-    "team",
-    "application",
-    "processing",
-    "completeness",
-]
-
 
 def input_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Valida o JSON de entrada e prepara o estado para os próximos nós.
+    Valida os dados do repositório buscados pelo repository_fetch_node.
 
-    Fluxo:
-      1. Loga o início do processamento
-      2. Verifica se os campos obrigatórios estão presentes
-      3. Verifica se o documento está completo (completeness.status)
-      4. Extrai informações-chave para log
-      5. Atualiza o estado com o resultado da validação
+    Verifica:
+      - repo_data foi preenchido (busca não falhou)
+      - existe pelo menos README ou algum manifesto (senão não há
+        conteúdo suficiente para documentar)
 
     Args:
-        state: Estado atual do grafo com json_entrada preenchido
+        state: Estado atual com repo_data preenchido
 
     Returns:
-        dict com atualizações para o estado do grafo.
-        O LangGraph faz merge automático com o estado atual.
+        dict com atualizações para o estado do grafo
     """
     logger.info("=" * 55)
-    logger.info("[input_node] Iniciando validação do documento")
+    logger.info("[input_node] Validando dados do repositório")
     logger.info("=" * 55)
 
-    json_entrada = state["json_entrada"]
+    if state.get("status_final") == "erro":
+        logger.warning(
+            "[input_node] ⚠ Erro detectado na busca do repositório — pulando validação"
+        )
+        return {"etapa_atual": "input_node"}
+
+    repo_data = state.get("repo_data")
     erros = list(state.get("erros", []))
 
-    # --- Validação 1: campos obrigatórios ---
-    campos_faltando = [
-        campo for campo in CAMPOS_OBRIGATORIOS
-        if campo not in json_entrada
-    ]
-
-    if campos_faltando:
-        erro = f"Campos obrigatórios ausentes: {campos_faltando}"
+    if not repo_data:
+        erro = "repo_data ausente — repository_fetch_node pode ter falhado"
         logger.error("[input_node] ✗ %s", erro)
         erros.append(erro)
         return {
@@ -74,38 +59,30 @@ def input_node(state: DocumentacaoState) -> dict[str, Any]:
             "etapa_atual": "input_node",
         }
 
-    # --- Validação 2: completeness do documento ---
-    completeness = json_entrada.get("completeness", {})
-    if completeness.get("status") != "COMPLETE":
-        campos_missing = completeness.get("missing_fields", [])
-        erro = f"Documento incompleto. Campos faltando: {campos_missing}"
+    tem_readme = bool(repo_data.get("readme_content"))
+    tem_manifesto = bool(repo_data.get("manifestos"))
+
+    if not tem_readme and not tem_manifesto:
+        erro = (
+            "Repositório sem README e sem manifesto reconhecido — "
+            "conteúdo insuficiente para gerar documentação de qualidade"
+        )
         logger.warning("[input_node] ⚠ %s", erro)
         erros.append(erro)
-
-    # --- Log das informações principais ---
-    application = json_entrada.get("application", {})
-    team = json_entrada.get("team", {})
-    processing = json_entrada.get("processing", {})
+        # Não bloqueia o fluxo — segue com aviso, a LLM ainda pode
+        # gerar algo a partir da árvore de arquivos e linguagem detectada
 
     logger.info(
-        "[input_node] ✓ Componente: '%s' | App: '%s'",
-        application.get("component_name"),
-        application.get("application_name"),
+        "[input_node] ✓ Repositório: '%s/%s'",
+        repo_data.get("owner"),
+        repo_data.get("repo_name"),
     )
     logger.info(
-        "[input_node] ✓ Time: '%s' | Tribo: '%s'",
-        team.get("time_responsavel"),
-        team.get("tribo"),
+        "[input_node] ✓ Linguagem detectada: '%s'",
+        repo_data.get("linguagem_principal") or "não identificada",
     )
-    logger.info(
-        "[input_node] ✓ Evento: '%s' | Tipo: '%s'",
-        processing.get("event_id"),
-        processing.get("event_type"),
-    )
-    logger.info(
-        "[input_node] ✓ Completeness: '%s'",
-        completeness.get("status"),
-    )
+    logger.info("[input_node] ✓ README presente: %s", tem_readme)
+    logger.info("[input_node] ✓ Manifestos presentes: %s", tem_manifesto)
     logger.info("[input_node] ✓ Validação concluída — seguindo para documentation_node")
 
     return {

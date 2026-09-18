@@ -3,8 +3,7 @@ settings.py
 -----------
 Gerenciamento centralizado de configurações da aplicação.
 
-Utiliza pydantic-settings para carregar variáveis do arquivo .env
-automaticamente, com tipagem e validação garantidas pelo Pydantic.
+Fase 7: adicionadas variáveis para busca de repositórios (GitHub/GitLab).
 """
 
 from functools import lru_cache
@@ -12,10 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Configurações centrais da aplicação.
-    Cada campo mapeia diretamente para uma variável de ambiente.
-    """
+    """Configurações centrais da aplicação."""
 
     # --- MongoDB ---
     mongodb_uri: str
@@ -31,9 +27,6 @@ class Settings(BaseSettings):
     openai_temperature: float = 0.3
 
     # --- Modo de entrada ---
-    # file       → lê mock_input/component_event.json
-    # mock_kafka → simula Kafka com JSON local
-    # kafka      → consumer Kafka real
     input_mode: str = "file"
 
     # --- Kafka ---
@@ -43,8 +36,6 @@ class Settings(BaseSettings):
     kafka_auto_offset_reset: str = "earliest"
 
     # --- PostgreSQL ---
-    # Local: localhost:5432 com usuário postgres
-    # Sicredi VM: atlas-documentacao-agent-pgdb.dev-sicredi.in
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_database: str = "atlas_documentacao_agente"
@@ -52,6 +43,13 @@ class Settings(BaseSettings):
     postgres_password: str
     postgres_sslmode: str = "prefer"
     postgres_connect_timeout: int = 10
+
+    # --- Repositório (Fase 7) ---
+    repository_url: str = "https://github.com/ricardocr18/chat_copaDoMundo"
+    repository_provider: str = "github"
+    github_token: str | None = None
+    gitlab_base_url: str = "https://gitlab.sicredi.net"
+    gitlab_token: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -62,8 +60,5 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    """
-    Retorna a instância única de Settings (singleton via cache).
-    O @lru_cache garante que o .env é lido apenas uma vez.
-    """
+    """Retorna a instância única de Settings (singleton via cache)."""
     return Settings()

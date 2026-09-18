@@ -1,18 +1,20 @@
 """
-agents/documentacao/state.py
+agent_application/state.py
 ------------------------------
 Define o Estado compartilhado do grafo LangGraph.
 
-Fase 5: adicionado campo id_postgres para rastrear o registro
-        inserido na tabela objetos_gerados_previas do PostgreSQL.
+Fase 7: substitui json_entrada por repository_url como entrada principal.
+        Adiciona repo_data (dados brutos buscados do repositório) e
+        muda previa_documentacao para o formato multi-seção (wiki).
 
 Ciclo de vida do Estado neste grafo:
-  1. input_node        → valida e carrega o JSON
-  2. documentation_node → preenche previa_documentacao
-  3. cataloging_node   → preenche metadados_catalogo
-  4. persistence_node  → preenche id_mongodb_previa e id_mongodb_metadados
-  5. postgres_node     → preenche id_postgres
-  6. supervisor_node   → preenche status_final e encerra
+  1. repository_fetch_node → preenche repo_data a partir da repository_url
+  2. input_node             → valida repo_data
+  3. documentation_node     → preenche secoes_documentacao (formato wiki)
+  4. cataloging_node        → preenche metadados_catalogo (checklist técnico)
+  5. persistence_node       → preenche id_mongodb_previa e id_mongodb_metadados
+  6. postgres_node          → preenche id_postgres
+  7. supervisor_node        → preenche status_final e encerra
 """
 
 from typing import Any
@@ -24,12 +26,19 @@ class DocumentacaoState(TypedDict):
     Estado completo do grafo de documentação e catalogação.
 
     Campos:
-        json_entrada: JSON normalizado recebido do inventário
+        repository_url: URL do repositório a ser analisado (entrada)
 
-        previa_documentacao: prévia gerada pelo documentation_node
+        repo_data: dados brutos buscados do repositório pelo
+                   repository_fetch_node — README, árvore de arquivos,
+                   manifestos, linguagem, event_id derivado (owner/repo)
+
+        secoes_documentacao: lista de seções geradas pelo documentation_node,
+                             cada uma com titulo, ordem e conteudo_markdown
                              → salva em documentos_gerados_previas (MongoDB)
 
-        metadados_catalogo: metadados gerados pelo cataloging_node
+        metadados_catalogo: resultado do checklist técnico gerado pelo
+                            cataloging_node (libs, segurança, bancos,
+                            mensageria, tecnologia, Sicredi Flow, S3, imagem)
                             → salva em componentes_catalogados_metadados (MongoDB)
 
         id_mongodb_previa: ID do documento em documentos_gerados_previas
@@ -42,10 +51,13 @@ class DocumentacaoState(TypedDict):
     """
 
     # --- Entrada ---
-    json_entrada: dict[str, Any]
+    repository_url: str
+
+    # --- Preenchido pelo repository_fetch_node ---
+    repo_data: dict[str, Any] | None
 
     # --- Gerado pelo documentation_node ---
-    previa_documentacao: dict[str, Any] | None
+    secoes_documentacao: list[dict[str, Any]] | None
 
     # --- Gerado pelo cataloging_node ---
     metadados_catalogo: dict[str, Any] | None
@@ -63,20 +75,21 @@ class DocumentacaoState(TypedDict):
     etapa_atual: str | None
 
 
-def criar_estado_inicial(json_entrada: dict[str, Any]) -> DocumentacaoState:
+def criar_estado_inicial(repository_url: str) -> DocumentacaoState:
     """
     Cria o estado inicial do grafo com valores padrão.
 
     Args:
-        json_entrada: JSON normalizado do inventário
+        repository_url: URL do repositório a ser analisado
 
     Returns:
-        DocumentacaoState com json_entrada preenchido e
+        DocumentacaoState com repository_url preenchida e
         todos os outros campos com valores padrão seguros.
     """
     return DocumentacaoState(
-        json_entrada=json_entrada,
-        previa_documentacao=None,
+        repository_url=repository_url,
+        repo_data=None,
+        secoes_documentacao=None,
         metadados_catalogo=None,
         id_mongodb_previa=None,
         id_mongodb_metadados=None,

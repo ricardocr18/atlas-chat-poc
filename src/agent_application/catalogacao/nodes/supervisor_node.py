@@ -1,10 +1,10 @@
 """
 nodes/supervisor_node.py
 --------------------------
-Último nó do grafo — valida e consolida o resultado final.
+Último nó do grafo (Fase 7) — valida e consolida o resultado final.
 
-Fase 5: atualizado para validar também o id_postgres
-        e exibir os três IDs de persistência no resumo.
+Sem mudanças de lógica em relação à Fase 6 — só os nomes de campos
+de log foram atualizados para refletir a origem via repositório.
 """
 
 import logging
@@ -18,11 +18,6 @@ logger = logging.getLogger(__name__)
 def supervisor_node(state: DocumentacaoState) -> dict[str, Any]:
     """
     Valida o resultado final e consolida o estado do grafo.
-
-    Verifica:
-      - IDs do MongoDB foram gerados (persistence_node ok)
-      - ID do PostgreSQL foi gerado (postgres_node ok)
-      - Não há erros críticos acumulados no estado
     """
     logger.info("=" * 55)
     logger.info("[supervisor_node] Validando resultado final do grafo")
@@ -34,7 +29,6 @@ def supervisor_node(state: DocumentacaoState) -> dict[str, Any]:
     id_postgres = state.get("id_postgres")
     metadados = state.get("metadados_catalogo", {})
 
-    # Se já havia erro crítico, apenas consolida
     if state.get("status_final") == "erro":
         logger.error(
             "[supervisor_node] ✗ Grafo encerrado com ERRO — %d erro(s)",
@@ -47,10 +41,9 @@ def supervisor_node(state: DocumentacaoState) -> dict[str, Any]:
             "etapa_atual": "supervisor_node",
         }
 
-    # Valida se todas as persistências aconteceram
     problemas = []
     if not id_previa:
-        problemas.append("ID da prévia MongoDB não gerado")
+        problemas.append("ID da documentação MongoDB não gerado")
     if not id_metadados:
         problemas.append("ID dos metadados MongoDB não gerado")
     if not id_postgres:
@@ -67,50 +60,37 @@ def supervisor_node(state: DocumentacaoState) -> dict[str, Any]:
             "etapa_atual": "supervisor_node",
         }
 
-    # Tudo ok — emite resumo completo
     status_final = "sucesso" if not erros else "sucesso_com_avisos"
 
     logger.info("[supervisor_node] ✓ GRAFO EXECUTADO COM SUCESSO")
     logger.info("-" * 55)
     logger.info(
-        "[supervisor_node] ✓ Componente   : '%s'",
+        "[supervisor_node] ✓ Componente    : '%s'",
         metadados.get("component_name"),
     )
     logger.info(
-        "[supervisor_node] ✓ Evento       : '%s'",
-        metadados.get("event_id"),
+        "[supervisor_node] ✓ Repositório   : '%s'",
+        metadados.get("repository"),
     )
     logger.info(
-        "[supervisor_node] ✓ ID prévia    : %s → documentos_gerados_previas (MongoDB)",
+        "[supervisor_node] ✓ ID doc wiki   : %s → documentos_gerados_previas (MongoDB)",
         id_previa,
     )
     logger.info(
-        "[supervisor_node] ✓ ID metadados : %s → componentes_catalogados_metadados (MongoDB)",
+        "[supervisor_node] ✓ ID checklist  : %s → componentes_catalogados_metadados (MongoDB)",
         id_metadados,
     )
     logger.info(
-        "[supervisor_node] ✓ ID postgres  : %s → objetos_gerados_previas (PostgreSQL)",
+        "[supervisor_node] ✓ ID postgres   : %s → objetos_gerados_previas (PostgreSQL)",
         id_postgres,
     )
-    logger.info(
-        "[supervisor_node] ✓ Status       : %s",
-        status_final,
-    )
+    logger.info("[supervisor_node] ✓ Status        : %s", status_final)
 
     if erros:
-        logger.warning(
-            "[supervisor_node] ⚠ %d aviso(s):", len(erros)
-        )
+        logger.warning("[supervisor_node] ⚠ %d aviso(s):", len(erros))
         for aviso in erros:
             logger.warning("[supervisor_node]   • %s", aviso)
 
-    logger.info("=" * 55)
-    logger.info("[supervisor_node] Verifique os dados:")
-    logger.info("[supervisor_node]   MongoDB  → atlas_documentacao_agente")
-    logger.info("[supervisor_node]     • documentos_gerados_previas")
-    logger.info("[supervisor_node]     • componentes_catalogados_metadados")
-    logger.info("[supervisor_node]   PostgreSQL → atlas_documentacao_agente")
-    logger.info("[supervisor_node]     • objetos_gerados_previas")
     logger.info("=" * 55)
 
     return {

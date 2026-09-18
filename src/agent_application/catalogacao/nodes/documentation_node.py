@@ -1,23 +1,15 @@
 """
 nodes/documentation_node.py
 -----------------------------
-Segundo nó do grafo — gera a prévia de documentação via LLM OpenAI.
+Terceiro nó do grafo (Fase 7) — gera a documentação em formato wiki
+multi-seção via LLM OpenAI, a partir do conteúdo real do repositório.
 
-Fase 2: gerava documentação mockada extraindo campos do JSON.
-Fase 3: chama a LLM OpenAI via LangChain para gerar documentação
-        rica, contextualizada e tecnicamente precisa.
-
-O que muda em relação à Fase 2:
-  - A função _gerar_previa_mockada() foi substituída por _chamar_llm_documentacao()
-  - O campo "gerado_por" agora mostra o modelo real utilizado
-  - O conteúdo gerado é inteligente, não apenas extração de campos
-
-O que NÃO muda:
-  - A interface do nó (entrada/saída de estado) é idêntica
-  - O persistence_node salva da mesma forma
-  - O supervisor_node valida da mesma forma
+Fase 3-6: recebia um JSON de entidade e gerava um texto corrido único.
+Fase 7: recebe repo_data (README, árvore, manifestos) e gera múltiplas
+        seções estruturadas, inspirado no padrão do deepwiki-open.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -26,8 +18,8 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from src.agent_application.prompts.prompts_catalog_document import (
-    SYSTEM_DOCUMENTACAO,
-    montar_prompt_documentacao,
+    SYSTEM_WIKI_DOCUMENTACAO,
+    montar_prompt_wiki_documentacao,
 )
 from src.agent_application.state import DocumentacaoState
 from src.settings import get_settings
@@ -35,74 +27,72 @@ from src.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _chamar_llm_documentacao(json_entrada: dict[str, Any]) -> dict[str, Any]:
+def _limpar_json_llm(texto: str) -> str:
     """
-    Chama a LLM OpenAI para gerar a prévia de documentação.
+    Remove blocos de markdown (```json ... ```) que a LLM às vezes
+    inclui mesmo quando instruída a não fazer isso.
+    """
+    texto = texto.strip()
+    if texto.startswith("```"):
+        linhas = texto.split("\n")
+        texto = "\n".join(linhas[1:-1])
+    return texto
 
-    Utiliza LangChain como camada de abstração sobre a OpenAI API.
-    O SystemMessage define o papel da LLM, o HumanMessage fornece
-    os dados do componente e a instrução de geração.
+
+def _chamar_llm_wiki(repo_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Chama a LLM OpenAI para gerar a documentação em formato wiki.
 
     Args:
-        json_entrada: JSON normalizado do inventário
+        repo_data: dados buscados pelo repository_fetch_node
 
     Returns:
-        dict estruturado no formato da collection documentos_gerados_previas
+        dict estruturado no formato da collection documentos_gerados_previas,
+        com o campo 'secoes' contendo a lista de seções da wiki
     """
     settings = get_settings()
-    application = json_entrada.get("application", {})
-    processing = json_entrada.get("processing", {})
 
-    # --- Inicializa o cliente OpenAI via LangChain ---
     llm = ChatOpenAI(
         api_key=settings.openai_api_key,
         model=settings.openai_model,
         temperature=settings.openai_temperature,
     )
 
-    # --- Monta as mensagens do prompt ---
     mensagens = [
-        SystemMessage(content=SYSTEM_DOCUMENTACAO),
-        HumanMessage(content=montar_prompt_documentacao(json_entrada)),
+        SystemMessage(content=SYSTEM_WIKI_DOCUMENTACAO),
+        HumanMessage(content=montar_prompt_wiki_documentacao(repo_data)),
     ]
 
     logger.info(
-        "[documentation_node] Chamando LLM '%s' para gerar documentação...",
+        "[documentation_node] Chamando LLM '%s' para gerar wiki...",
         settings.openai_model,
     )
 
-    # --- Chama a LLM ---
     resposta = llm.invoke(mensagens)
-    texto_gerado = resposta.content
+    texto_limpo = _limpar_json_llm(resposta.content)
 
+    try:
+        resultado_wiki = json.loads(texto_limpo)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"LLM retornou JSON inválido para a wiki: {str(exc)}\n"
+            f"Conteúdo retornado: {texto_limpo[:200]}..."
+        ) from exc
+
+    secoes = resultado_wiki.get("secoes", [])
     logger.info(
-        "[documentation_node] ✓ LLM respondeu — %d caracteres gerados",
-        len(texto_gerado),
+        "[documentation_node] ✓ LLM gerou %d seção(ões)",
+        len(secoes),
     )
 
-    # --- Estrutura o retorno no formato da collection ---
-    people = json_entrada.get("people", {})
-
     return {
-        "event_id": processing.get("event_id"),
-        "transaction_id": processing.get("transaction_id"),
-        "component_name": application.get("component_name"),
-        "application_name": application.get("application_name"),
-        "titulo": f"{application.get('component_name')} — Prévia de Documentação",
-        "descricao_gerada": texto_gerado,
-        "tipo_aplicacao": application.get("tipo_aplicacao"),
-        "environment": application.get("environment"),
-        "repository": application.get("repository"),
-        "responsaveis": {
-            "tech_leads": people.get("tech_leads", []),
-            "aprovadores": people.get("aprovadores", []),
-            "arquitetos": people.get("arquitetos", []),
-            "desenvolvedores": people.get("desenvolvedores", []),
-            "qa": people.get("qa", []),
-        },
-        "fonte_evento": processing.get("event_id"),
-        "tipo_evento": processing.get("event_type"),
-        "data_evento": processing.get("event_date"),
+        "event_id": repo_data.get("event_id"),
+        "repository_url": repo_data.get("repository_url"),
+        "component_name": repo_data.get("repo_name"),
+        "titulo": resultado_wiki.get(
+            "titulo_geral", f"{repo_data.get('repo_name')} — Documentação"
+        ),
+        "secoes": secoes,
         "gerado_em": datetime.now(timezone.utc).isoformat(),
         "gerado_por": settings.openai_model,
         "tokens_utilizados": resposta.usage_metadata,
@@ -111,16 +101,16 @@ def _chamar_llm_documentacao(json_entrada: dict[str, Any]) -> dict[str, Any]:
 
 def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera a prévia de documentação do componente via LLM OpenAI.
+    Gera a documentação wiki do repositório via LLM OpenAI.
 
     Args:
-        state: Estado atual com json_entrada validado
+        state: Estado atual com repo_data validado
 
     Returns:
-        dict com previa_documentacao preenchida pela LLM
+        dict com secoes_documentacao preenchido pela LLM
     """
     logger.info("-" * 55)
-    logger.info("[documentation_node] Gerando prévia via LLM OpenAI")
+    logger.info("[documentation_node] Gerando documentação wiki via LLM OpenAI")
     logger.info("-" * 55)
 
     if state.get("status_final") == "erro":
@@ -129,32 +119,36 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
         )
         return {"etapa_atual": "documentation_node"}
 
-    json_entrada = state["json_entrada"]
+    repo_data = state["repo_data"]
     erros = list(state.get("erros", []))
 
     try:
-        previa = _chamar_llm_documentacao(json_entrada)
+        documento = _chamar_llm_wiki(repo_data)
 
         logger.info(
-            "[documentation_node] ✓ Prévia gerada para: '%s'",
-            previa.get("component_name"),
+            "[documentation_node] ✓ Documentação gerada para: '%s'",
+            documento.get("component_name"),
         )
+        for secao in documento.get("secoes", []):
+            logger.info(
+                "[documentation_node]   • Seção %s: '%s'",
+                secao.get("ordem"),
+                secao.get("titulo"),
+            )
         logger.info(
             "[documentation_node] ✓ Gerado por: '%s'",
-            previa.get("gerado_por"),
+            documento.get("gerado_por"),
         )
-        logger.info(
-            "[documentation_node] ✓ Seguindo para cataloging_node"
-        )
+        logger.info("[documentation_node] ✓ Seguindo para cataloging_node")
 
         return {
-            "previa_documentacao": previa,
+            "secoes_documentacao": documento,
             "erros": erros,
             "etapa_atual": "documentation_node",
         }
 
     except Exception as exc:
-        erro = f"Erro ao chamar LLM para documentação: {str(exc)}"
+        erro = f"Erro ao gerar documentação wiki: {str(exc)}"
         logger.error("[documentation_node] ✗ %s", erro)
         erros.append(erro)
         return {
