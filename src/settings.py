@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     postgres_connect_timeout: int = 10
 
     # --- Repositório (Fase 7) ---
-    repository_url: str = "https://github.com/ricardocr18/chat_copaDoMundo"
+    repository_url: str = "https://github.com/ricardocr18/rocketseat-nodejs-projeto3SolidGympass"
     repository_provider: str = "github"
     github_token: str | None = None
     gitlab_base_url: str = "https://gitlab.sicredi.net"
