@@ -3,29 +3,24 @@ agent_application/prompts/prompts_catalog_document.py
 ---------------------------------------------------------
 Prompts utilizados pela LLM OpenAI/gpt-oss nos nós de geração (Fase 9).
 
-Incremento consolidado nesta fase, a partir de duas observações reais
-(estilo narrativo vs. rótulos, e as 6 sugestões da revisão externa —
-ver histórico completo no cabeçalho anterior deste arquivo), MAIS três
-correções adicionais descobertas ao testar com o documento REAL e
-completo do cooper-ai-codex-api (antes só tínhamos uma versão parcial):
-
-  C1) BUG CORRIGIDO — detecção de contrato OpenAPI:
-      o documento real usa a chave "content" (string, singular), não
-      "contents" (array) como o quality-console-back-end usava. Sem
-      essa correção, um componente com contrato OpenAPI completo era
-      erroneamente relatado como "não preenchido".
-
-  C2) Priorização de sinais diretos de mensageria: o documento real
-      mostra resource_type="TOPIC" nas integrações, autenticação SASL
-      com target=KAFKA, e "KAFKA" em runtime.enabled_features — todos
-      sinais diretos e confiáveis, muito mais fortes que a heurística
-      de porta (9093). A heurística de porta agora é só o último
-      recurso, usado somente quando nenhum sinal direto existir.
-
-  C3) Campos antes ignorados agora incorporados na formatação: o bloco
-      "cmdb" (nome oficial da aplicação, grupo aprovador, domínios de
-      serviço) e o histórico de deploy por ambiente em
-      "deployment.deployments" (versão, quem fez o último deploy).
+Histórico de correções neste arquivo:
+  C1) Detecção de contrato OpenAPI aceita "content" (string) e
+      "contents" (array) — evita falso negativo.
+  C2) Ordem de prioridade para detecção de mensageria: resource_type
+      TOPIC > SASL/KAFKA na autenticação > KAFKA em enabled_features >
+      heurística de porta (último recurso, nunca "confirmado").
+  C3) Campos de CMDB e histórico de deploy por ambiente incorporados
+      na formatação, antes ignorados.
+  C4) NOVO — o diagrama Mermaid da seção de integrações estava saindo
+      como campo extra "conteudo_diagrama" em vez de embutido dentro
+      do próprio "conteudo_markdown". Reforçada regra explícita
+      proibindo qualquer campo além dos 4 especificados.
+  C5) NOVO — o campo "fontes_utilizadas" estava recebendo caminhos
+      traduzidos/simplificados (ex: "identificacao.status",
+      "endpoints.expostos") que não existem de verdade no
+      document_context, inviabilizando o propósito de auditoria.
+      Adicionada lista fechada dos caminhos reais válidos, com
+      instrução explícita de nunca traduzir ou inventar variações.
 """
 
 import json
@@ -176,12 +171,33 @@ Contrato OpenAPI formal preenchido: {'sim' + openapi_detalhe if openapi_preenchi
 - Responsável funcional: {jira.get('functional_owner') or '(não informado)'}"""
 
 
+# Lista fechada dos caminhos reais válidos no document_context — usada na
+# regra de "fontes_utilizadas" (Correção C5). A LLM deve citar SOMENTE
+# caminhos desta lista, exatamente como escritos aqui.
+CAMINHOS_VALIDOS_DOCUMENT_CONTEXT = """component_name, description, status, category, visibility, repository,
+cmdb.component_key, cmdb.application.name, cmdb.team.code, cmdb.team.approving_group, cmdb.service_domains,
+ownership.responsible_team, ownership.tribe.name, ownership.project, ownership.approvers,
+ownership.tech_leads, ownership.architects, ownership.developers, ownership.qa, ownership.ux,
+ownership.temporary_contributors, ownership.contributor_teams,
+classification.application_type, classification.main_language, classification.main_framework,
+technology.technologies, technology.package_structure,
+api.exposed_endpoints, api.openapi_contract,
+integrations.consumed, integrations.consumers,
+security.authentication.application, security.authentication.infrastructure,
+observability.enabled, observability.disabled,
+data.databases,
+runtime.enabled_features, runtime.resources_by_environment, runtime.cloud_provider, runtime.clusters,
+quality.criticality, quality.score,
+deployment.default_branch, deployment.pipeline_deploy, deployment.deployments,
+jira.epics, jira.roadmap, jira.functional_owner"""
+
+
 # ===========================================================
 # PROMPT 1: DOCUMENTAÇÃO WIKI MULTI-SEÇÃO
 # Usado pelo documentation_node
 # ===========================================================
 
-SYSTEM_WIKI_DOCUMENTACAO = """Você é um especialista em documentação técnica de software, \
+SYSTEM_WIKI_DOCUMENTACAO = f"""Você é um especialista em documentação técnica de software, \
 com profundo conhecimento em arquitetura de sistemas e boas práticas de engenharia.
 
 Seu papel é analisar o contexto estruturado de um componente de software — já coletado e \
@@ -214,32 +230,51 @@ Regras obrigatórias de conteúdo:
   Infraestrutura em qual ambiente o componente está mais atualizado e se há
   defasagem de versão entre ambientes (isso é fato observável, não invenção)
 
+Regra crítica de ESTRUTURA DE SAÍDA — leia com atenção, ela evita um erro observado na prática:
+- Cada seção do JSON de resposta deve ter EXATAMENTE estes 4 campos, nenhum a mais:
+  "titulo", "ordem", "conteudo_markdown", "fontes_utilizadas"
+- NUNCA crie campos adicionais como "conteudo_diagrama", "resumo", "detalhes" ou qualquer
+  outro nome — se você gerar um diagrama Mermaid (seção 3), ele deve ficar DENTRO da
+  própria string de "conteudo_markdown" daquela seção, como parte do mesmo texto
+  markdown (prosa seguida do bloco ```mermaid ... ``` no final do mesmo campo)
+
+Regra sobre o campo "fontes_utilizadas" — leia com atenção, ela evita um erro observado
+na prática (a LLM às vezes traduz ou simplifica nomes de campos, tornando a citação inútil
+para auditoria):
+- Cite SOMENTE caminhos EXATOS da lista abaixo, escritos exatamente como aparecem aqui
+  (em inglês, com a pontuação e capitalização exatas) — NUNCA traduza para português,
+  NUNCA invente sub-caminhos, NUNCA simplifique (ex: "status" está certo; "identificacao.status"
+  está errado e não deve ser usado)
+- Lista de caminhos válidos:
+  {CAMINHOS_VALIDOS_DOCUMENT_CONTEXT}
+- Se uma seção não usar diretamente nenhum desses campos, use uma lista vazia []
+
 Auto-checagem antes de responder (aplique mentalmente, sem custo de nova chamada):
 - Releia cada frase que você escreveu: ela corresponde a um fato presente nos dados
   fornecidos? "Corresponder" significa que o fato é verdadeiro segundo os dados —
   NÃO significa copiar o campo literalmente. Reescrever com suas palavras continua
   correspondendo ao fato, e é o comportamento esperado
 - Se uma frase não tiver correspondência com nenhum dado fornecido, remova-a
+- Confira se cada "fontes_utilizadas" citada está literalmente na lista de caminhos válidos
+  acima — se não estiver, corrija ou remova antes de responder
+- Confira se cada seção tem exatamente os 4 campos esperados, sem nenhum campo extra
 
 Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos de código markdown \
-(exceto o bloco ```mermaid pedido dentro do conteúdo da seção de integrações, que faz \
-parte do markdown da própria seção).
+fora da estrutura pedida.
 
 Sobre as seções — gere exatamente 5, na ordem abaixo:
   1. Visão Geral — o que é o componente, quem é responsável, status, criticidade
   2. Arquitetura e Endpoints — API exposta, rotas principais (resumidas por padrão se
      forem muitas), contrato OpenAPI
   3. Integrações e Dependências — o que consome e quem consome este componente, em
-     prosa, seguida de um diagrama Mermaid (```mermaid ... ```) do tipo "graph LR"
-     representando essas mesmas relações (ex: A --> B para cada integração consumida
-     ou consumidora) — o diagrama é só uma representação visual do mesmo dado já
-     descrito em texto, não uma informação nova
+     prosa, seguida (dentro do MESMO conteudo_markdown desta seção) de um diagrama
+     Mermaid (```mermaid ... ```) do tipo "graph LR" representando essas mesmas
+     relações (ex: A --> B para cada integração consumida ou consumidora) — o
+     diagrama é só uma representação visual do mesmo dado já descrito em texto,
+     não uma informação nova, e não deve virar um campo separado
   4. Segurança e Observabilidade — autenticação e ferramentas de observabilidade
   5. Dados e Infraestrutura — bancos de dados, runtime, deploy (incluindo o histórico
-     de versões por ambiente, quando disponível)
-
-Para CADA seção, além do conteúdo, informe também de quais campos do document_context
-a seção se baseou (para fins de auditoria), no campo "fontes_utilizadas"."""
+     de versões por ambiente, quando disponível)"""
 
 
 def montar_prompt_wiki_documentacao(document_context: dict[str, Any]) -> str:
@@ -259,7 +294,7 @@ em formato de wiki, organizada em seções.
 
 ## O que gerar
 
-Retorne um JSON com este formato exato:
+Retorne um JSON com este formato exato — cada seção tem EXATAMENTE 4 campos, nunca mais:
 
 {{
   "titulo_geral": "nome do componente — Documentação Técnica",
@@ -268,38 +303,41 @@ Retorne um JSON com este formato exato:
       "titulo": "Visão Geral",
       "ordem": 1,
       "conteudo_markdown": "...",
-      "fontes_utilizadas": ["ex: ownership.responsible_team", "ex: quality.criticality"]
+      "fontes_utilizadas": ["ownership.responsible_team", "quality.criticality"]
     }},
     {{
       "titulo": "Arquitetura e Endpoints",
       "ordem": 2,
       "conteudo_markdown": "...",
-      "fontes_utilizadas": ["..."]
+      "fontes_utilizadas": ["api.exposed_endpoints", "api.openapi_contract"]
     }},
     {{
       "titulo": "Integrações e Dependências",
       "ordem": 3,
-      "conteudo_markdown": "... (prosa seguida de um bloco ```mermaid com graph LR) ...",
-      "fontes_utilizadas": ["..."]
+      "conteudo_markdown": "texto em prosa descrevendo as integrações...\\n\\n```mermaid\\ngraph LR\\nA --> B\\n```",
+      "fontes_utilizadas": ["integrations.consumed", "integrations.consumers"]
     }},
     {{
       "titulo": "Segurança e Observabilidade",
       "ordem": 4,
       "conteudo_markdown": "...",
-      "fontes_utilizadas": ["..."]
+      "fontes_utilizadas": ["security.authentication.application", "observability.enabled"]
     }},
     {{
       "titulo": "Dados e Infraestrutura",
       "ordem": 5,
       "conteudo_markdown": "...",
-      "fontes_utilizadas": ["..."]
+      "fontes_utilizadas": ["data.databases", "deployment.deployments"]
     }}
   ]
 }}
 
+Repare no exemplo da seção 3: o bloco ```mermaid``` está DENTRO da mesma string de \
+"conteudo_markdown", não em um campo separado. Siga exatamente esse padrão.
+
 Lembre-se: prosa corrida, sem rótulos "Campo: valor", listas longas resumidas por \
-categoria. Cada "conteudo_markdown" deve ter entre 1 e 3 parágrafos (mais o diagrama \
-Mermaid, no caso da seção 3)."""
+categoria, e fontes_utilizadas usando apenas os caminhos exatos da lista fornecida \
+nas instruções do sistema."""
 
 
 # ===========================================================
