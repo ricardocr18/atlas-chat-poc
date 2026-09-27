@@ -1,20 +1,31 @@
 """
 agent_application/prompts/prompts_catalog_document.py
 ---------------------------------------------------------
-Prompts utilizados pela LLM OpenAI nos nós de geração (Fase 8).
+Prompts utilizados pela LLM OpenAI/gpt-oss nos nós de geração (Fase 9).
 
-Fase 7: prompts recebiam README/manifesto em texto livre, exigindo
-        muita inferência da LLM (ex: "esse Kafka é log ou negócio?").
-Fase 8: prompts recebem document_context — dados estruturados e já
-        normalizados pelo atlas-apis-ingestao. A LLM passa a atuar
-        muito mais como REDATORA e ANALISTA do que como DETETIVE:
-        a maior parte dos fatos já vem pronta, e o trabalho principal
-        é traduzir isso em texto legível e aplicar julgamento
-        qualitativo (maturidade, resumo executivo, sugestões).
+Incremento consolidado nesta fase, a partir de duas observações reais
+(estilo narrativo vs. rótulos, e as 6 sugestões da revisão externa —
+ver histórico completo no cabeçalho anterior deste arquivo), MAIS três
+correções adicionais descobertas ao testar com o documento REAL e
+completo do cooper-ai-codex-api (antes só tínhamos uma versão parcial):
 
-Continua valendo a regra de ouro: NUNCA afirmar algo sem evidência no
-document_context, e sinalizar claramente ausências (campos vazios ou
-nulos) sem presumir o motivo por trás delas.
+  C1) BUG CORRIGIDO — detecção de contrato OpenAPI:
+      o documento real usa a chave "content" (string, singular), não
+      "contents" (array) como o quality-console-back-end usava. Sem
+      essa correção, um componente com contrato OpenAPI completo era
+      erroneamente relatado como "não preenchido".
+
+  C2) Priorização de sinais diretos de mensageria: o documento real
+      mostra resource_type="TOPIC" nas integrações, autenticação SASL
+      com target=KAFKA, e "KAFKA" em runtime.enabled_features — todos
+      sinais diretos e confiáveis, muito mais fortes que a heurística
+      de porta (9093). A heurística de porta agora é só o último
+      recurso, usado somente quando nenhum sinal direto existir.
+
+  C3) Campos antes ignorados agora incorporados na formatação: o bloco
+      "cmdb" (nome oficial da aplicação, grupo aprovador, domínios de
+      serviço) e o histórico de deploy por ambiente em
+      "deployment.deployments" (versão, quem fez o último deploy).
 """
 
 import json
@@ -29,6 +40,7 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
     prompts (documentação e checklist) — ambos recebem exatamente a
     mesma visão dos dados.
     """
+    cmdb = document_context.get("cmdb", {})
     ownership = document_context.get("ownership", {})
     classification = document_context.get("classification", {})
     technology = document_context.get("technology", {})
@@ -51,6 +63,40 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
     consumidos = integrations.get("consumed", {})
     consumidores = integrations.get("consumers", {})
 
+    # --- Correção C1: aceita tanto "content" (string) quanto "contents" (array) ---
+    openapi_contract = api.get("openapi_contract", {})
+    openapi_preenchido = bool(openapi_contract.get("content")) or bool(
+        openapi_contract.get("contents")
+    )
+    openapi_detalhe = ""
+    if openapi_preenchido and openapi_contract.get("host"):
+        openapi_detalhe = (
+            f" (host: {openapi_contract.get('host')}, "
+            f"ambiente: {openapi_contract.get('environment')})"
+        )
+
+    # --- Correção C3: bloco CMDB, antes ignorado ---
+    cmdb_texto = "(nenhum dado de CMDB associado)"
+    if cmdb:
+        dominios = ", ".join(d.get("name", "") for d in cmdb.get("service_domains", []))
+        cmdb_texto = f"""- Chave do componente no CMDB: {cmdb.get('component_key') or '(não informada)'}
+- Nome oficial da aplicação: {cmdb.get('application', {}).get('name') or '(não informado)'}
+- Código do time (CMDB): {cmdb.get('team', {}).get('code') or '(não informado)'}
+- Grupo aprovador: {cmdb.get('team', {}).get('approving_group') or '(não informado)'}
+- Domínios de serviço: {dominios or '(nenhum)'}"""
+
+    # --- Correção C3: histórico de deploy por ambiente, antes ignorado ---
+    deployments_por_ambiente = deployment.get("deployments", {})
+    deployments_texto = "(sem histórico de deploy por ambiente)"
+    if deployments_por_ambiente:
+        linhas = []
+        for ambiente, info in deployments_por_ambiente.items():
+            linhas.append(
+                f"- {ambiente}: versão {info.get('version')}, "
+                f"último deploy em {info.get('created_at')} por {info.get('updated_by')}"
+            )
+        deployments_texto = "\n".join(linhas)
+
     return f"""### Identificação
 - Nome: {document_context.get('component_name')}
 - Descrição: {document_context.get('description') or '(não informada)'}
@@ -59,14 +105,21 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
 - Visibilidade: {document_context.get('visibility')}
 - Repositório: {document_context.get('repository')}
 
-### Ownership (responsabilidade organizacional)
+### CMDB (dados de governança/inventário corporativo)
+{cmdb_texto}
+
+### Ownership (responsabilidade organizacional) — use campos ricos quando presentes
 - Time responsável: {ownership.get('responsible_team') or '(não informado)'}
 - Tribo: {ownership.get('tribe', {}).get('name') or '(não informada)'}
 - Projeto: {ownership.get('project') or '(não informado)'}
-- Aprovadores: {ownership.get('approvers') or '(lista vazia — não preenchido)'}
-- Tech leads: {ownership.get('tech_leads') or '(lista vazia — não preenchido)'}
-- Arquitetos: {ownership.get('architects') or '(lista vazia — não preenchido)'}
-- Desenvolvedores: {ownership.get('developers') or '(lista vazia — não preenchido)'}
+- Aprovadores: {json.dumps(ownership.get('approvers') or [], ensure_ascii=False)}
+- Tech leads: {json.dumps(ownership.get('tech_leads') or [], ensure_ascii=False)}
+- Arquitetos: {json.dumps(ownership.get('architects') or [], ensure_ascii=False)}
+- Desenvolvedores: {json.dumps(ownership.get('developers') or [], ensure_ascii=False)}
+- QA: {json.dumps(ownership.get('qa') or [], ensure_ascii=False)}
+- UX: {json.dumps(ownership.get('ux') or [], ensure_ascii=False)}
+- Colaboradores temporários: {json.dumps(ownership.get('temporary_contributors') or [], ensure_ascii=False)}
+- Times colaboradores: {json.dumps(ownership.get('contributor_teams') or [], ensure_ascii=False)}
 
 ### Classificação técnica
 - Tipo de aplicação: {classification.get('application_type')}
@@ -79,10 +132,10 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
 ### Estrutura de pacotes (parcial)
 {json.dumps(technology.get('package_structure', [])[:30], ensure_ascii=False)}
 
-### Endpoints expostos pela API
+### Endpoints expostos pela API (total: {len(endpoints_resumo)})
 {chr(10).join(endpoints_resumo) if endpoints_resumo else '(nenhum endpoint listado)'}
 
-Contrato OpenAPI formal preenchido: {'sim' if api.get('openapi_contract', {}).get('contents') else 'não'}
+Contrato OpenAPI formal preenchido: {'sim' + openapi_detalhe if openapi_preenchido else 'não'}
 
 ### Integrações — o que este componente CONSOME (por ambiente)
 {json.dumps(consumidos, ensure_ascii=False, indent=2)}
@@ -114,6 +167,8 @@ Contrato OpenAPI formal preenchido: {'sim' if api.get('openapi_contract', {}).ge
 ### Deploy
 - Branch padrão: {deployment.get('default_branch')}
 - Pipeline de deploy: {deployment.get('pipeline_deploy') or '(não informado)'}
+- Histórico de deploy por ambiente:
+{deployments_texto}
 
 ### Jira
 - Épicos: {jira.get('epics') or '(nenhum)'}
@@ -133,24 +188,58 @@ Seu papel é analisar o contexto estruturado de um componente de software — j�
 normalizado por um sistema interno de inventário — e gerar uma documentação completa em \
 formato de WIKI, organizada em seções.
 
-Regras obrigatórias:
+Regra crítica de ESTILO — leia com atenção, ela evita um erro observado na prática:
+- Escreva SEMPRE em prosa corrida e sintetizada, como um redator humano escreveria
+- NUNCA use o formato de rótulo "Campo: valor" ou listas de "**Nome:** valor" — um leitor
+  não deve perceber que os dados vieram de uma estrutura de campos; a documentação deve
+  ler como texto, não como uma reformatação do JSON de origem
+- Quando uma lista tiver mais de 5 itens (ex: endpoints, tecnologias), NÃO liste todos —
+  agrupe por padrão/categoria, mencione a contagem total, e cite apenas os mais
+  representativos como exemplo (ex: "a API expõe 19 endpoints, majoritariamente de
+  consulta (GET), como listagem de componentes e times")
+
+Regras obrigatórias de conteúdo:
 - Escreva em português brasileiro formal e técnico
-- Baseie-se APENAS nos dados fornecidos — a maior parte já é fato estruturado, não texto
-  livre a ser interpretado; use-os diretamente, sem adicionar suposições
+- Baseie-se APENAS nos dados fornecidos — não adicione suposições
 - NUNCA invente informações que não estejam nos dados fornecidos
 - Quando um campo estiver vazio, nulo, ou com lista vazia, mencione isso de forma neutra
-  (ex: "não há aprovadores cadastrados") — NÃO presuma o motivo (não diga que foi
-  "esquecido" ou "negligenciado"; apenas registre o fato)
-- Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos de código markdown
+  (ex: "não há aprovadores cadastrados") — NÃO presuma o motivo
+- Quando os campos de ownership detalhado estiverem preenchidos (aprovadores, QA, UX,
+  colaboradores temporários, times colaboradores), aproveite-os na Visão Geral para
+  descrever a composição real do time (ex: "squad multidisciplinar com QA e UX dedicados")
+  — só mencione o que realmente estiver presente nos dados
+- Quando houver dados de CMDB, use o nome oficial da aplicação (application.name) e o
+  grupo aprovador para enriquecer a Visão Geral, se agregarem contexto útil
+- Quando houver histórico de deploy por ambiente, mencione na seção de Dados e
+  Infraestrutura em qual ambiente o componente está mais atualizado e se há
+  defasagem de versão entre ambientes (isso é fato observável, não invenção)
 
-Sobre as seções:
-- Gere exatamente 5 seções, na ordem abaixo — os dados fornecidos já vêm organizados
-  nos mesmos grupos temáticos, facilitando o mapeamento:
+Auto-checagem antes de responder (aplique mentalmente, sem custo de nova chamada):
+- Releia cada frase que você escreveu: ela corresponde a um fato presente nos dados
+  fornecidos? "Corresponder" significa que o fato é verdadeiro segundo os dados —
+  NÃO significa copiar o campo literalmente. Reescrever com suas palavras continua
+  correspondendo ao fato, e é o comportamento esperado
+- Se uma frase não tiver correspondência com nenhum dado fornecido, remova-a
+
+Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos de código markdown \
+(exceto o bloco ```mermaid pedido dentro do conteúdo da seção de integrações, que faz \
+parte do markdown da própria seção).
+
+Sobre as seções — gere exatamente 5, na ordem abaixo:
   1. Visão Geral — o que é o componente, quem é responsável, status, criticidade
-  2. Arquitetura e Endpoints — API exposta, rotas principais, contrato OpenAPI
-  3. Integrações e Dependências — o que consome e quem consome este componente
+  2. Arquitetura e Endpoints — API exposta, rotas principais (resumidas por padrão se
+     forem muitas), contrato OpenAPI
+  3. Integrações e Dependências — o que consome e quem consome este componente, em
+     prosa, seguida de um diagrama Mermaid (```mermaid ... ```) do tipo "graph LR"
+     representando essas mesmas relações (ex: A --> B para cada integração consumida
+     ou consumidora) — o diagrama é só uma representação visual do mesmo dado já
+     descrito em texto, não uma informação nova
   4. Segurança e Observabilidade — autenticação e ferramentas de observabilidade
-  5. Dados e Infraestrutura — bancos de dados, runtime, deploy"""
+  5. Dados e Infraestrutura — bancos de dados, runtime, deploy (incluindo o histórico
+     de versões por ambiente, quando disponível)
+
+Para CADA seção, além do conteúdo, informe também de quais campos do document_context
+a seção se baseou (para fins de auditoria), no campo "fontes_utilizadas"."""
 
 
 def montar_prompt_wiki_documentacao(document_context: dict[str, Any]) -> str:
@@ -178,33 +267,39 @@ Retorne um JSON com este formato exato:
     {{
       "titulo": "Visão Geral",
       "ordem": 1,
-      "conteudo_markdown": "..."
+      "conteudo_markdown": "...",
+      "fontes_utilizadas": ["ex: ownership.responsible_team", "ex: quality.criticality"]
     }},
     {{
       "titulo": "Arquitetura e Endpoints",
       "ordem": 2,
-      "conteudo_markdown": "..."
+      "conteudo_markdown": "...",
+      "fontes_utilizadas": ["..."]
     }},
     {{
       "titulo": "Integrações e Dependências",
       "ordem": 3,
-      "conteudo_markdown": "..."
+      "conteudo_markdown": "... (prosa seguida de um bloco ```mermaid com graph LR) ...",
+      "fontes_utilizadas": ["..."]
     }},
     {{
       "titulo": "Segurança e Observabilidade",
       "ordem": 4,
-      "conteudo_markdown": "..."
+      "conteudo_markdown": "...",
+      "fontes_utilizadas": ["..."]
     }},
     {{
       "titulo": "Dados e Infraestrutura",
       "ordem": 5,
-      "conteudo_markdown": "..."
+      "conteudo_markdown": "...",
+      "fontes_utilizadas": ["..."]
     }}
   ]
 }}
 
-Cada "conteudo_markdown" deve ter entre 1 e 3 parágrafos (ou listas, quando fizer mais \
-sentido — por exemplo, para listar endpoints)."""
+Lembre-se: prosa corrida, sem rótulos "Campo: valor", listas longas resumidas por \
+categoria. Cada "conteudo_markdown" deve ter entre 1 e 3 parágrafos (mais o diagrama \
+Mermaid, no caso da seção 3)."""
 
 
 # ===========================================================
@@ -233,28 +328,51 @@ Regras obrigatórias:
 Como localizar cada item nos dados estruturados fornecidos:
 - "seguranca": campo de autenticação (tipo e provedor)
 - "bancos_de_dados": lista de bancos de dados
-- "mensageria": procure nas integrações por endpoints cuja porta ou nome sugiram um
-  broker de mensageria (ex: porta 9093 é característica de Kafka); NÃO marque
-  "confirmado" só por existir uma integração HTTP comum
+- "mensageria": siga esta ORDEM DE PRIORIDADE, do sinal mais forte para o mais fraco —
+  pare no primeiro que encontrar evidência:
+  1. Nas integrações (consumidas ou consumidoras), procure algum item com
+     "resource_type": "TOPIC" — esse é o sinal MAIS DIRETO possível, cite o
+     resource_name encontrado
+  2. Na autenticação de infraestrutura, procure entradas com "target": "KAFKA" ou
+     mecanismo SASL associado a Kafka — também um sinal direto e confiável
+  3. Em runtime.enabled_features, procure literalmente "KAFKA" — sinal direto de que
+     a plataforma está habilitada para o componente, mesmo sem uso explícito nas
+     integrações
+  4. SOMENTE se nenhum dos três sinais acima existir, procure nas integrações por
+     endpoints cuja porta sugira um broker (porta 9093 é característica de Kafka) —
+     esta é uma heurística fraca; ao usá-la, marque no máximo "parcial", nunca
+     "confirmado", e explique que é uma inferência por porta, não confirmação direta
+  Se nenhum dos quatro sinais existir, marque "nao_identificado"
 - "tecnologia_principal": framework principal e lista de tecnologias declaradas
 - "uso_sicredi_flow": procure por funcionalidades de plataforma habilitadas (ex:
   Consul, Vault, Kubernetes) — esses são sinais diretos de uso da plataforma
-  corporativa interna, não de uma biblioteca específica
+  corporativa interna, não de uma biblioteca específica. Contas de automação
+  responsáveis por deploys (ex: um "updated_by" que parece um usuário de sistema/bot,
+  não uma pessoa) também são um sinal complementar de pipeline corporativo padronizado
 - "armazenamento_objetos": procure evidência de QUALQUER serviço de armazenamento de
   objetos (AWS S3, Azure Blob Storage, Google Cloud Storage, ou equivalente interno) —
   se os dados não mencionarem nada disso, marque "nao_identificado"
 - "containerizacao": procure no pipeline de deploy por ferramentas de build de imagem
   (ex: Jib) ou orquestração de containers (ex: Kubernetes)
 
+Sobre o contrato OpenAPI: o texto fornecido já indica de forma confiável se o contrato
+está preenchido ("sim"/"não") — use essa informação diretamente, ela já trata as duas
+formas possíveis em que o dado de origem pode vir estruturado.
+
 Sobre "tipo_componente":
 - Use o tipo de aplicação informado nos dados para classificar como
   "servico", "biblioteca", "batch" ou "modulo-compartilhado"
 
-Sobre "limitacoes_detectadas":
-- Registre aqui qualquer lacuna relevante nos próprios dados fornecidos, por exemplo:
-  contrato OpenAPI não preenchido, lista de aprovadores vazia, responsável funcional
-  não informado no Jira — sem especular a razão dessas lacunas
-- Deixe como lista vazia [] se não houver nenhuma lacuna relevante
+Distinção crítica — fato ausente vs. opinião técnica (não misture os dois campos):
+- "limitacoes_detectadas": SOMENTE lacunas objetivas e verificáveis nos DADOS fornecidos
+  (ex: "contrato OpenAPI não preenchido", "responsável funcional não informado") — é
+  um registro de fato, sem juízo de valor sobre se isso é bom ou ruim
+- "sugestoes_melhoria": aqui SIM cabe julgamento técnico seu, com base na sua experiência
+  (ex: "considerar adicionar cache" é uma recomendação, não um fato observado)
+- Não coloque a mesma informação nos dois campos com fraseado diferente — se é uma
+  lacuna de dado, vai em limitacoes_detectadas; se é um conselho de melhoria técnica,
+  vai em sugestoes_melhoria
+- Deixe limitacoes_detectadas como lista vazia [] se não houver nenhuma lacuna relevante
 
 Regras de formato:
 - Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos
@@ -292,7 +410,7 @@ def montar_prompt_checklist_tecnico(document_context: dict[str, Any]) -> str:
   }},
   "mensageria": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite o endpoint/evidência encontrada, ou a ausência dela"
+    "detalhe": "cite qual dos 4 sinais (TOPIC nas integrações / SASL-KAFKA na autenticação / KAFKA em enabled_features / porta 9093) foi usado, ou a ausência de todos"
   }},
   "tecnologia_principal": {{
     "status": "confirmado|parcial|nao_identificado",
@@ -310,12 +428,12 @@ def montar_prompt_checklist_tecnico(document_context: dict[str, Any]) -> str:
     "status": "confirmado|parcial|nao_identificado",
     "detalhe": "cite a evidência do pipeline de deploy encontrada"
   }},
-  "limitacoes_detectadas": ["lacunas relevantes nos próprios dados fornecidos — lista vazia [] se não houver"],
+  "limitacoes_detectadas": ["APENAS lacunas objetivas nos dados — lista vazia [] se não houver"],
   "tags": ["tags geradas com base na análise — mínimo 3"],
   "classificacao_maturidade": "inicial|em-desenvolvimento|maduro|legado",
   "nivel_documentacao": "inexistente|basico|intermediario|completo",
   "resumo_executivo": "resumo de 1-2 frases para exibição no catálogo",
-  "sugestoes_melhoria": ["lista de até 3 sugestões objetivas"],
+  "sugestoes_melhoria": ["APENAS julgamento técnico/recomendações — até 3"],
   "team_id": {json.dumps(document_context.get('ownership', {}).get('team_id'), ensure_ascii=False)},
   "time_responsavel": {json.dumps(document_context.get('ownership', {}).get('responsible_team'), ensure_ascii=False)},
   "projeto": {json.dumps(document_context.get('ownership', {}).get('project') or None, ensure_ascii=False)},
