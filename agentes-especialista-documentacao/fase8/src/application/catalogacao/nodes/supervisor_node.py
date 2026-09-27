@@ -10,7 +10,7 @@ de log foram atualizados para refletir a origem via repositório.
 import logging
 from typing import Any
 
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 
 logger = logging.getLogger(__name__)
 

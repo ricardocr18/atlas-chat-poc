@@ -3,39 +3,30 @@ agent_application/agent_service.py
 -------------------------------------
 Orquestrador da aplicação — ponto de entrada do grafo LangGraph.
 
-Fase 7: a entrada principal passa a ser uma URL de repositório
-        (REPOSITORY_URL no .env), hardcoded para fins de teste/mock
-        nesta fase. O consumer Kafka (Fase 4) permanece disponível
-        na infraestrutura, mas não é o caminho usado por padrão aqui
-        — quando o evento do inventário passar a carregar uma URL de
-        repositório, basta plugar essa mesma função como callback.
-
-Responsabilidades:
-  1. Ler a URL do repositório configurada
-  2. Criar o estado inicial do grafo com essa URL
-  3. Executar o grafo LangGraph
-  4. Exibir o resultado final
+Fase 8: a entrada principal passa a ser um component_name
+        (COMPONENT_NAME no .env), buscado manualmente — descoberta
+        automática (polling ou Kafka) fica para uma fase futura.
 """
 
 import logging
 
-from src.agent_application.graph import criar_grafo_documentacao
-from src.agent_application.state import criar_estado_inicial
+from src.application.graph import criar_grafo_documentacao
+from src.application.state import criar_estado_inicial
 from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def _processar_repositorio(repository_url: str) -> None:
+def _processar_componente(component_name: str) -> None:
     """
-    Executa o grafo completo para uma URL de repositório.
+    Executa o grafo completo para um component_name.
 
     Args:
-        repository_url: URL do repositório a ser analisado
+        component_name: nome do componente a ser buscado e processado
     """
-    logger.info("Repositório a processar: '%s'", repository_url)
+    logger.info("Componente a processar: '%s'", component_name)
 
-    estado_inicial = criar_estado_inicial(repository_url)
+    estado_inicial = criar_estado_inicial(component_name)
     grafo = criar_grafo_documentacao()
     estado_final = grafo.invoke(estado_inicial)
 
@@ -62,19 +53,20 @@ def _processar_repositorio(repository_url: str) -> None:
 
 def executar_grafo() -> None:
     """
-    Ponto de entrada principal — Fase 7: entrada via URL de repositório.
+    Ponto de entrada principal — Fase 8: entrada via atlas_ingestao_api.
 
-    A URL é lida de REPOSITORY_URL no .env (hardcoded nesta fase para
-    fins de teste). No futuro, essa função poderá ser chamada como
-    callback de um consumer Kafka, exatamente como _processar_mensagem
-    era chamada na Fase 4 — nenhuma mudança estrutural no restante do
+    O component_name é lido de COMPONENT_NAME no .env (descoberta
+    manual nesta fase). No futuro, esta função poderá ser chamada
+    como callback de um consumer Kafka ou de um loop de polling,
+    exatamente como já demonstramos com o padrão de callback usado
+    desde a Fase 4 — nenhuma mudança estrutural no restante do
     projeto seria necessária.
     """
     settings = get_settings()
 
     logger.info("=" * 60)
-    logger.info("ATLAS DOCUMENTACAO AGENT — FASE 7")
-    logger.info("Entrada via URL de repositório (%s)", settings.repository_provider)
+    logger.info("ATLAS DOCUMENTACAO AGENT — FASE 8")
+    logger.info("Entrada via atlas_ingestao_api.document_context")
     logger.info("=" * 60)
 
-    _processar_repositorio(settings.repository_url)
+    _processar_componente(settings.component_name)

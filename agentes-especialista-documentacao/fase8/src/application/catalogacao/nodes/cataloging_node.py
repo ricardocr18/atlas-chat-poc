@@ -1,15 +1,15 @@
 """
 nodes/cataloging_node.py
 --------------------------
-Quarto nó do grafo (Fase 7) — gera os metadados técnicos via LLM OpenAI,
-percorrendo o checklist fixo (libs, segurança, bancos, mensageria,
-tecnologia, Sicredi Flow, S3, imagem).
+Quarto nó do grafo (Fase 8) — gera o checklist técnico via LLM OpenAI,
+a partir do document_context estruturado vindo do atlas-apis-ingestao.
 
-Fase 3-6: recebia JSON com metadados de negócio já prontos.
-Fase 7: os campos de negócio (team_id, criticidade, environment,
-        time_responsavel, projeto, tribo, status_aplicacao) NÃO EXISTEM
-        mais na entrada — ficam explicitamente None, pois não podem ser
-        inferidos apenas do código-fonte.
+Fase 7: campos de negócio (team_id, criticidade, environment etc)
+        ficavam explicitamente None — não existiam na entrada.
+Fase 8: esses campos agora vêm preenchidos com dado real, extraído
+        diretamente do document_context (não pela LLM — ver
+        prompts_catalog_document.py, onde já são pré-preenchidos
+        no próprio template do prompt).
 """
 
 import json
@@ -20,11 +20,11 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from src.agent_application.prompts.prompts_catalog_document import (
+from src.application.prompts.prompts_catalog_document import (
     SYSTEM_CHECKLIST_TECNICO,
     montar_prompt_checklist_tecnico,
 )
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -39,17 +39,17 @@ def _limpar_json_llm(texto: str) -> str:
     return texto
 
 
-def _chamar_llm_checklist(repo_data: dict[str, Any]) -> dict[str, Any]:
+def _chamar_llm_checklist(document_context: dict[str, Any]) -> dict[str, Any]:
     """
-    Chama a LLM OpenAI para preencher o checklist técnico do repositório.
+    Chama a LLM OpenAI para preencher o checklist técnico do componente.
 
     Args:
-        repo_data: dados buscados pelo repository_fetch_node
+        document_context: dados buscados pelo ingestao_fetch_node
 
     Returns:
         dict estruturado no formato da collection
-        componentes_catalogados_metadados, com campos de negócio
-        explicitamente None
+        componentes_catalogados_metadados, já com os campos de negócio
+        preenchidos (não mais None como na Fase 7)
     """
     settings = get_settings()
 
@@ -61,7 +61,7 @@ def _chamar_llm_checklist(repo_data: dict[str, Any]) -> dict[str, Any]:
 
     mensagens = [
         SystemMessage(content=SYSTEM_CHECKLIST_TECNICO),
-        HumanMessage(content=montar_prompt_checklist_tecnico(repo_data)),
+        HumanMessage(content=montar_prompt_checklist_tecnico(document_context)),
     ]
 
     logger.info(
@@ -81,35 +81,23 @@ def _chamar_llm_checklist(repo_data: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
     # --- Campos de rastreabilidade ---
-    checklist["event_id"] = repo_data.get("event_id")
-    checklist["repository"] = repo_data.get("repository_url")
-    checklist["repository_owner"] = repo_data.get("owner")
+    checklist["event_id"] = document_context.get("component_name")
+    checklist["repository"] = document_context.get("repository")
+    checklist["fonte_dados"] = "atlas_ingestao_api.document_context"
     checklist["catalogado_em"] = datetime.now(timezone.utc).isoformat()
     checklist["catalogado_por"] = settings.openai_model
     checklist["tokens_utilizados"] = resposta.usage_metadata
-
-    # --- Campos de negócio: explicitamente None (Fase 7) ---
-    # Não existem no repositório de código — dependiam do JSON do
-    # inventário, que não faz mais parte desta entrada.
-    checklist["team_id"] = None
-    checklist["time_responsavel"] = None
-    checklist["projeto"] = None
-    checklist["tribo"] = None
-    checklist["criticidade"] = None
-    checklist["environment"] = None
-    checklist["status_aplicacao"] = None
-    checklist["categoria_aplicacao"] = None
 
     return checklist
 
 
 def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera os metadados técnicos (checklist) do repositório via LLM OpenAI.
+    Gera o checklist técnico do componente via LLM OpenAI.
 
     Args:
-        state: Estado atual com repo_data validado e secoes_documentacao
-               já geradas
+        state: Estado atual com document_context validado e
+               secoes_documentacao já geradas
 
     Returns:
         dict com metadados_catalogo preenchido pela LLM
@@ -124,15 +112,20 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
         )
         return {"etapa_atual": "cataloging_node"}
 
-    repo_data = state["repo_data"]
+    document_context = state["document_context"]
     erros = list(state.get("erros", []))
 
     try:
-        metadados = _chamar_llm_checklist(repo_data)
+        metadados = _chamar_llm_checklist(document_context)
 
         logger.info(
             "[cataloging_node] ✓ Checklist gerado para: '%s'",
             metadados.get("component_name"),
+        )
+        logger.info(
+            "[cataloging_node] ✓ Time responsável: '%s' | Criticidade: '%s'",
+            metadados.get("time_responsavel"),
+            metadados.get("criticidade"),
         )
         for item in [
             "seguranca",
@@ -140,7 +133,7 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
             "mensageria",
             "tecnologia_principal",
             "uso_sicredi_flow",
-            "uso_s3",
+            "armazenamento_objetos",
             "containerizacao",
         ]:
             resultado_item = metadados.get(item, {})
@@ -150,8 +143,7 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
                 resultado_item.get("status", "?") if isinstance(resultado_item, dict) else resultado_item,
             )
         logger.info(
-            "[cataloging_node] ✓ Catalogado por: '%s'",
-            metadados.get("catalogado_por"),
+            "[cataloging_node] ✓ Catalogado por: '%s'", metadados.get("catalogado_por")
         )
         logger.info("[cataloging_node] ✓ Seguindo para persistence_node")
 

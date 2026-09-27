@@ -8,7 +8,7 @@ checklist técnico nas collections corretas do MongoDB.
 import logging
 from typing import Any
 
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 from src.infrastructure.mongodb import (
     ComponentesMetadadosRepository,
     DocumentosPreViasRepository,

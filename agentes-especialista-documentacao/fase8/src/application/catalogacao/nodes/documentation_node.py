@@ -1,12 +1,9 @@
 """
 nodes/documentation_node.py
 -----------------------------
-Terceiro nó do grafo (Fase 7) — gera a documentação em formato wiki
-multi-seção via LLM OpenAI, a partir do conteúdo real do repositório.
-
-Fase 3-6: recebia um JSON de entidade e gerava um texto corrido único.
-Fase 7: recebe repo_data (README, árvore, manifestos) e gera múltiplas
-        seções estruturadas, inspirado no padrão do deepwiki-open.
+Terceiro nó do grafo (Fase 8) — gera a documentação em formato wiki
+multi-seção via LLM OpenAI, a partir do document_context estruturado
+vindo do atlas-apis-ingestao.
 """
 
 import json
@@ -17,21 +14,18 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from src.agent_application.prompts.prompts_catalog_document import (
+from src.application.prompts.prompts_catalog_document import (
     SYSTEM_WIKI_DOCUMENTACAO,
     montar_prompt_wiki_documentacao,
 )
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 from src.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 def _limpar_json_llm(texto: str) -> str:
-    """
-    Remove blocos de markdown (```json ... ```) que a LLM às vezes
-    inclui mesmo quando instruída a não fazer isso.
-    """
+    """Remove blocos de markdown que a LLM às vezes inclui por engano."""
     texto = texto.strip()
     if texto.startswith("```"):
         linhas = texto.split("\n")
@@ -39,16 +33,15 @@ def _limpar_json_llm(texto: str) -> str:
     return texto
 
 
-def _chamar_llm_wiki(repo_data: dict[str, Any]) -> dict[str, Any]:
+def _chamar_llm_wiki(document_context: dict[str, Any]) -> dict[str, Any]:
     """
     Chama a LLM OpenAI para gerar a documentação em formato wiki.
 
     Args:
-        repo_data: dados buscados pelo repository_fetch_node
+        document_context: dados buscados pelo ingestao_fetch_node
 
     Returns:
-        dict estruturado no formato da collection documentos_gerados_previas,
-        com o campo 'secoes' contendo a lista de seções da wiki
+        dict estruturado no formato da collection documentos_gerados_previas
     """
     settings = get_settings()
 
@@ -60,7 +53,7 @@ def _chamar_llm_wiki(repo_data: dict[str, Any]) -> dict[str, Any]:
 
     mensagens = [
         SystemMessage(content=SYSTEM_WIKI_DOCUMENTACAO),
-        HumanMessage(content=montar_prompt_wiki_documentacao(repo_data)),
+        HumanMessage(content=montar_prompt_wiki_documentacao(document_context)),
     ]
 
     logger.info(
@@ -80,19 +73,17 @@ def _chamar_llm_wiki(repo_data: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
     secoes = resultado_wiki.get("secoes", [])
-    logger.info(
-        "[documentation_node] ✓ LLM gerou %d seção(ões)",
-        len(secoes),
-    )
+    logger.info("[documentation_node] ✓ LLM gerou %d seção(ões)", len(secoes))
 
     return {
-        "event_id": repo_data.get("event_id"),
-        "repository_url": repo_data.get("repository_url"),
-        "component_name": repo_data.get("repo_name"),
+        "event_id": document_context.get("component_name"),
+        "repository": document_context.get("repository"),
+        "component_name": document_context.get("component_name"),
         "titulo": resultado_wiki.get(
-            "titulo_geral", f"{repo_data.get('repo_name')} — Documentação"
+            "titulo_geral", f"{document_context.get('component_name')} — Documentação"
         ),
         "secoes": secoes,
+        "fonte_dados": "atlas_ingestao_api.document_context",
         "gerado_em": datetime.now(timezone.utc).isoformat(),
         "gerado_por": settings.openai_model,
         "tokens_utilizados": resposta.usage_metadata,
@@ -101,10 +92,10 @@ def _chamar_llm_wiki(repo_data: dict[str, Any]) -> dict[str, Any]:
 
 def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Gera a documentação wiki do repositório via LLM OpenAI.
+    Gera a documentação wiki do componente via LLM OpenAI.
 
     Args:
-        state: Estado atual com repo_data validado
+        state: Estado atual com document_context validado
 
     Returns:
         dict com secoes_documentacao preenchido pela LLM
@@ -119,11 +110,11 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
         )
         return {"etapa_atual": "documentation_node"}
 
-    repo_data = state["repo_data"]
+    document_context = state["document_context"]
     erros = list(state.get("erros", []))
 
     try:
-        documento = _chamar_llm_wiki(repo_data)
+        documento = _chamar_llm_wiki(document_context)
 
         logger.info(
             "[documentation_node] ✓ Documentação gerada para: '%s'",
@@ -136,8 +127,7 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
                 secao.get("titulo"),
             )
         logger.info(
-            "[documentation_node] ✓ Gerado por: '%s'",
-            documento.get("gerado_por"),
+            "[documentation_node] ✓ Gerado por: '%s'", documento.get("gerado_por")
         )
         logger.info("[documentation_node] ✓ Seguindo para cataloging_node")
 

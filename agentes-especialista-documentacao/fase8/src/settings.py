@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     gitlab_base_url: str = "https://gitlab.sicredi.net"
     gitlab_token: str | None = None
 
+     # --- Ingestão (Fase 8) ---
+    # Conexão de LEITURA, separada do banco onde escrevemos nossos resultados
+    ingestao_mongodb_uri: str = "mongodb://localhost:27017"
+    ingestao_mongodb_database: str = "atlas_ingestao_api"
+ 
+    # Descoberta manual (decisão explícita para este momento do projeto):
+    # o nome do componente a processar vem fixo do .env, não de um
+    # mecanismo automático (polling ou Kafka ficam para fase futura)
+    component_name: str = "quality-console-back-end"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

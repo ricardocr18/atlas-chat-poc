@@ -13,7 +13,7 @@ Execução:
 import logging
 import sys
 
-from src.agent_application.agent_service import executar_grafo
+from src.application.agent_service import executar_grafo
 from src.settings import get_settings
 
 def configurar_logging() -> None:

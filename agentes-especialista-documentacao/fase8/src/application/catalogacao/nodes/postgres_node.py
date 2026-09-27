@@ -14,7 +14,7 @@ Fase 7: os campos de negócio (team_id, criticidade, environment etc)
 import logging
 from typing import Any
 
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 from src.infrastructure.postgresql import (
     ObjetosGeradosPreViasRepository,
     get_connection,

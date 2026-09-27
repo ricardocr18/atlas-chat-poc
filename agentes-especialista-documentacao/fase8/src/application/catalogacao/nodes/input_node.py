@@ -1,56 +1,51 @@
 """
 nodes/input_node.py
 --------------------
-Segundo nó do grafo (Fase 7) — valida os dados buscados do repositório.
+Segundo nó do grafo (Fase 8) — valida os dados do componente
+buscados no atlas_ingestao_api.
 
-Fase 1-6: validava campos de um JSON estruturado (team, application...).
-Fase 7: valida se a busca do repositório trouxe o mínimo necessário
-        para gerar documentação com qualidade.
-
-Por que validar aqui e não deixar passar direto?
-  Um repositório pode não ter README, não ter manifesto reconhecido,
-  ou a árvore de arquivos pode ter vindo vazia. Nesses casos é melhor
-  avisar cedo do que deixar a LLM gerar documentação sem contexto.
+Fase 7: validava se a busca do repositório trouxe README/manifesto.
+Fase 8: valida se o document_context tem os campos mínimos para
+        gerar documentação e catalogação com qualidade.
 """
 
 import logging
 from typing import Any
 
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 
 logger = logging.getLogger(__name__)
+
+# Campos considerados essenciais — sem eles a documentação ficaria
+# vazia demais para ter valor
+CAMPOS_ESSENCIAIS = ["component_name", "classification", "ownership"]
 
 
 def input_node(state: DocumentacaoState) -> dict[str, Any]:
     """
-    Valida os dados do repositório buscados pelo repository_fetch_node.
-
-    Verifica:
-      - repo_data foi preenchido (busca não falhou)
-      - existe pelo menos README ou algum manifesto (senão não há
-        conteúdo suficiente para documentar)
+    Valida o document_context buscado pelo ingestao_fetch_node.
 
     Args:
-        state: Estado atual com repo_data preenchido
+        state: Estado atual com document_context preenchido
 
     Returns:
         dict com atualizações para o estado do grafo
     """
     logger.info("=" * 55)
-    logger.info("[input_node] Validando dados do repositório")
+    logger.info("[input_node] Validando contexto do componente")
     logger.info("=" * 55)
 
     if state.get("status_final") == "erro":
         logger.warning(
-            "[input_node] ⚠ Erro detectado na busca do repositório — pulando validação"
+            "[input_node] ⚠ Erro detectado na busca do componente — pulando validação"
         )
         return {"etapa_atual": "input_node"}
 
-    repo_data = state.get("repo_data")
+    document_context = state.get("document_context")
     erros = list(state.get("erros", []))
 
-    if not repo_data:
-        erro = "repo_data ausente — repository_fetch_node pode ter falhado"
+    if not document_context:
+        erro = "document_context ausente — ingestao_fetch_node pode ter falhado"
         logger.error("[input_node] ✗ %s", erro)
         erros.append(erro)
         return {
@@ -59,30 +54,30 @@ def input_node(state: DocumentacaoState) -> dict[str, Any]:
             "etapa_atual": "input_node",
         }
 
-    tem_readme = bool(repo_data.get("readme_content"))
-    tem_manifesto = bool(repo_data.get("manifestos"))
+    campos_faltando = [
+        campo for campo in CAMPOS_ESSENCIAIS if not document_context.get(campo)
+    ]
 
-    if not tem_readme and not tem_manifesto:
-        erro = (
-            "Repositório sem README e sem manifesto reconhecido — "
-            "conteúdo insuficiente para gerar documentação de qualidade"
-        )
+    if campos_faltando:
+        erro = f"Campos essenciais ausentes no document_context: {campos_faltando}"
         logger.warning("[input_node] ⚠ %s", erro)
         erros.append(erro)
         # Não bloqueia o fluxo — segue com aviso, a LLM ainda pode
-        # gerar algo a partir da árvore de arquivos e linguagem detectada
+        # gerar algo útil com o que estiver disponível
 
     logger.info(
-        "[input_node] ✓ Repositório: '%s/%s'",
-        repo_data.get("owner"),
-        repo_data.get("repo_name"),
+        "[input_node] ✓ Componente: '%s'",
+        document_context.get("component_name"),
     )
     logger.info(
-        "[input_node] ✓ Linguagem detectada: '%s'",
-        repo_data.get("linguagem_principal") or "não identificada",
+        "[input_node] ✓ Tipo: '%s' | Linguagem: '%s'",
+        document_context.get("classification", {}).get("application_type"),
+        document_context.get("classification", {}).get("main_language"),
     )
-    logger.info("[input_node] ✓ README presente: %s", tem_readme)
-    logger.info("[input_node] ✓ Manifestos presentes: %s", tem_manifesto)
+    logger.info(
+        "[input_node] ✓ Time responsável: '%s'",
+        document_context.get("ownership", {}).get("responsible_team"),
+    )
     logger.info("[input_node] ✓ Validação concluída — seguindo para documentation_node")
 
     return {

@@ -21,7 +21,7 @@ dos nós de persistência (infraestrutura, não geração).
 import logging
 from typing import Any
 
-from src.agent_application.state import DocumentacaoState
+from src.application.state import DocumentacaoState
 from src.infrastructure.repository import buscar_repositorio
 
 logger = logging.getLogger(__name__)

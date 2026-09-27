@@ -1,175 +1,179 @@
 """
 agent_application/prompts/prompts_catalog_document.py
 ---------------------------------------------------------
-Prompts utilizados pela LLM OpenAI nos nós de geração (Fase 7).
+Prompts utilizados pela LLM OpenAI nos nós de geração (Fase 8).
 
-Incremento na Fase 7: os prompts agora recebem os sinais determinísticos
-coletados pelos clients (registros_internos_detectados, modulos_detectados,
-multi_modulo_detectado, readme_estruturado_detectado) e usam regras mais
-específicas para evitar erros observados em repositórios corporativos
-reais:
+Fase 7: prompts recebiam README/manifesto em texto livre, exigindo
+        muita inferência da LLM (ex: "esse Kafka é log ou negócio?").
+Fase 8: prompts recebem document_context — dados estruturados e já
+        normalizados pelo atlas-apis-ingestao. A LLM passa a atuar
+        muito mais como REDATORA e ANALISTA do que como DETETIVE:
+        a maior parte dos fatos já vem pronta, e o trabalho principal
+        é traduzir isso em texto legível e aplicar julgamento
+        qualitativo (maturidade, resumo executivo, sugestões).
 
-  1. Distinguir uso técnico/observabilidade de uso funcional/negócio
-     da mesma tecnologia (ex: Kafka usado só para transporte de logs
-     não é mensageria de negócio)
-  2. Detectar "Sicredi Flow" por padrão de evidência (domínios internos,
-     namespaces organizacionais), não por nome de biblioteca específica
-  3. Reconhecer containerização declarada via plugin de build
-     (ex: Jib no Gradle), não só por Dockerfile
-  4. Priorizar extração literal quando o README já segue um template
-     corporativo estruturado, em vez de resumir livremente
-  5. Classificar o tipo de componente (serviço/biblioteca/batch/módulo
-     compartilhado) antes de gerar instruções de "Como Rodar"
-  6. Declarar limitações conhecidas da própria análise — importante
-     porque o agente de classificação (dois juízes LLM) nunca vê o
-     repositório original, só o que este agente produzir
-
-Ajuste posterior: o campo antigo "uso_s3" foi renomeado para
-"armazenamento_objetos" — o nome antigo presumia AWS como único
-provedor. O checklist agora orienta a LLM a identificar QUALQUER
-serviço de armazenamento de objetos (AWS S3, Azure Blob Storage,
-Google Cloud Storage, MinIO ou equivalente on-premises), registrando
-qual foi encontrado no campo "detalhe" — sem enviesar a pergunta
-para um único vendor.
+Continua valendo a regra de ouro: NUNCA afirmar algo sem evidência no
+document_context, e sinalizar claramente ausências (campos vazios ou
+nulos) sem presumir o motivo por trás delas.
 """
 
 import json
 from typing import Any
 
 
-def _formatar_sinais_deterministicos(repo_data: dict[str, Any]) -> str:
+def _formatar_document_context(document_context: dict[str, Any]) -> str:
     """
-    Formata os sinais determinísticos coletados pelo client em texto
-    para incluir nos prompts — funciona igual para os dois prompts
-    (documentação e checklist), evitando duplicar essa lógica duas vezes.
-    """
-    registros = repo_data.get("registros_internos_detectados", [])
-    modulos = repo_data.get("modulos_detectados", [])
-    multi_modulo = repo_data.get("multi_modulo_detectado", False)
-    readme_estruturado = repo_data.get("readme_estruturado_detectado", False)
+    Formata o document_context inteiro em texto legível para os prompts.
 
-    linhas = [
-        f"- Domínios internos detectados nos manifestos/README: "
-        f"{', '.join(registros) if registros else '(nenhum encontrado)'}",
-        f"- Projeto multi-módulo: {'SIM — módulos: ' + ', '.join(modulos) if multi_modulo else 'não detectado'}",
-        f"- README segue template corporativo estruturado: "
-        f"{'SIM — priorize extração literal das seções nomeadas' if readme_estruturado else 'não detectado'}",
-    ]
-    return "\n".join(linhas)
+    Centraliza a formatação para não duplicar essa lógica nos dois
+    prompts (documentação e checklist) — ambos recebem exatamente a
+    mesma visão dos dados.
+    """
+    ownership = document_context.get("ownership", {})
+    classification = document_context.get("classification", {})
+    technology = document_context.get("technology", {})
+    api = document_context.get("api", {})
+    integrations = document_context.get("integrations", {})
+    security = document_context.get("security", {})
+    observability = document_context.get("observability", {})
+    data = document_context.get("data", {})
+    runtime = document_context.get("runtime", {})
+    quality = document_context.get("quality", {})
+    deployment = document_context.get("deployment", {})
+    jira = document_context.get("jira", {})
+
+    endpoints = api.get("exposed_endpoints", {})
+    endpoints_resumo = []
+    for metodo, lista in endpoints.items():
+        for item in lista:
+            endpoints_resumo.append(f"{metodo} {item.get('path')} ({item.get('operation_id')})")
+
+    consumidos = integrations.get("consumed", {})
+    consumidores = integrations.get("consumers", {})
+
+    return f"""### Identificação
+- Nome: {document_context.get('component_name')}
+- Descrição: {document_context.get('description') or '(não informada)'}
+- Status: {document_context.get('status')}
+- Categoria: {document_context.get('category')}
+- Visibilidade: {document_context.get('visibility')}
+- Repositório: {document_context.get('repository')}
+
+### Ownership (responsabilidade organizacional)
+- Time responsável: {ownership.get('responsible_team') or '(não informado)'}
+- Tribo: {ownership.get('tribe', {}).get('name') or '(não informada)'}
+- Projeto: {ownership.get('project') or '(não informado)'}
+- Aprovadores: {ownership.get('approvers') or '(lista vazia — não preenchido)'}
+- Tech leads: {ownership.get('tech_leads') or '(lista vazia — não preenchido)'}
+- Arquitetos: {ownership.get('architects') or '(lista vazia — não preenchido)'}
+- Desenvolvedores: {ownership.get('developers') or '(lista vazia — não preenchido)'}
+
+### Classificação técnica
+- Tipo de aplicação: {classification.get('application_type')}
+- Linguagem principal: {classification.get('main_language')}
+- Framework principal: {classification.get('main_framework')}
+
+### Tecnologias declaradas
+{json.dumps(technology.get('technologies', []), ensure_ascii=False)}
+
+### Estrutura de pacotes (parcial)
+{json.dumps(technology.get('package_structure', [])[:30], ensure_ascii=False)}
+
+### Endpoints expostos pela API
+{chr(10).join(endpoints_resumo) if endpoints_resumo else '(nenhum endpoint listado)'}
+
+Contrato OpenAPI formal preenchido: {'sim' if api.get('openapi_contract', {}).get('contents') else 'não'}
+
+### Integrações — o que este componente CONSOME (por ambiente)
+{json.dumps(consumidos, ensure_ascii=False, indent=2)}
+
+### Integrações — quem CONSOME este componente (por ambiente)
+{json.dumps(consumidores, ensure_ascii=False, indent=2)}
+
+### Segurança
+- Autenticação de aplicação: {json.dumps(security.get('authentication', {}).get('application', []), ensure_ascii=False)}
+- Autenticação de infraestrutura: {json.dumps(security.get('authentication', {}).get('infrastructure', []), ensure_ascii=False)}
+
+### Observabilidade
+- Habilitados: {observability.get('enabled') or '(nenhum)'}
+- Desabilitados: {observability.get('disabled') or '(nenhum)'}
+
+### Dados
+- Bancos de dados: {data.get('databases') or '(nenhum informado)'}
+
+### Runtime e infraestrutura
+- Funcionalidades habilitadas: {runtime.get('enabled_features') or '(nenhuma)'}
+- Ambientes com recursos: {runtime.get('resources_by_environment') or '(nenhum)'}
+- Provedor de nuvem: {runtime.get('cloud_provider') or '(não informado)'}
+- Clusters: {json.dumps(runtime.get('clusters', {}), ensure_ascii=False)}
+
+### Qualidade
+- Criticidade: {quality.get('criticality') or '(não informada)'}
+- Score: {quality.get('score')}
+
+### Deploy
+- Branch padrão: {deployment.get('default_branch')}
+- Pipeline de deploy: {deployment.get('pipeline_deploy') or '(não informado)'}
+
+### Jira
+- Épicos: {jira.get('epics') or '(nenhum)'}
+- Roadmap: {jira.get('roadmap') or '(nenhum)'}
+- Responsável funcional: {jira.get('functional_owner') or '(não informado)'}"""
 
 
 # ===========================================================
 # PROMPT 1: DOCUMENTAÇÃO WIKI MULTI-SEÇÃO
 # Usado pelo documentation_node
 # ===========================================================
-# (sem alterações neste incremento — mantido igual ao já existente)
 
 SYSTEM_WIKI_DOCUMENTACAO = """Você é um especialista em documentação técnica de software, \
-com profundo conhecimento em arquitetura de sistemas e boas práticas de engenharia, incluindo \
-convenções usadas em repositórios corporativos de grandes organizações.
+com profundo conhecimento em arquitetura de sistemas e boas práticas de engenharia.
 
-Seu papel é analisar o conteúdo de um repositório de código e gerar uma documentação \
-completa em formato de WIKI, organizada em múltiplas seções — não um texto corrido único.
+Seu papel é analisar o contexto estruturado de um componente de software — já coletado e \
+normalizado por um sistema interno de inventário — e gerar uma documentação completa em \
+formato de WIKI, organizada em seções.
 
 Regras obrigatórias:
 - Escreva em português brasileiro formal e técnico
-- Baseie-se APENAS no conteúdo fornecido (README, árvore de arquivos, manifestos)
-- NUNCA invente funcionalidades, tecnologias ou informações que não estejam
-  explícitas ou razoavelmente inferíveis do conteúdo fornecido
-- Se uma seção não tiver informação suficiente, escreva isso claramente
-  em vez de inventar
+- Baseie-se APENAS nos dados fornecidos — a maior parte já é fato estruturado, não texto
+  livre a ser interpretado; use-os diretamente, sem adicionar suposições
+- NUNCA invente informações que não estejam nos dados fornecidos
+- Quando um campo estiver vazio, nulo, ou com lista vazia, mencione isso de forma neutra
+  (ex: "não há aprovadores cadastrados") — NÃO presuma o motivo (não diga que foi
+  "esquecido" ou "negligenciado"; apenas registre o fato)
+- Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos de código markdown
 
-Regras sobre README estruturado:
-- Se os sinais indicarem que o README segue um template corporativo conhecido
-  (seções nomeadas como "Objetivo", "Responsáveis", "Build"), EXTRAIA e adapte
-  diretamente essas seções em vez de resumir livremente — são mais confiáveis
-  que qualquer inferência sua
-- Se o README não for estruturado, gere as seções com base no conjunto do
-  conteúdo disponível (README livre, árvore de arquivos, manifestos)
-
-Regras sobre classificação do componente e a seção "Como Rodar":
-- Antes de escrever "Como Rodar", identifique que TIPO de componente é este:
-  * serviço implantável (tem servidor web, porta exposta, ou definição de imagem)
-  * biblioteca/SDK (é publicado como dependência para outros consumirem)
-  * job/processo batch (processamento agendado, sem servidor exposto)
-  * módulo compartilhado dentro de um projeto multi-módulo
-- Adapte as instruções ao tipo: para uma biblioteca, explique como ADICIONAR
-  como dependência, não como "rodar um servidor"; para um serviço, explique
-  como executá-lo
-
-Regras sobre projetos multi-módulo:
-- Se os sinais indicarem que o projeto é multi-módulo, mencione isso
-  explicitamente na seção "Visão Geral" — deixe claro que a análise pode
-  não cobrir o detalhe interno de cada módulo individualmente
-
-Regras sobre a data de criação do repositório:
-- Se a data de criação estiver disponível, mencione-a na seção "Visão Geral"
-  de forma natural (ex: "criado em [mês/ano]") — isso dá contexto temporal
-  para quem lê a documentação
-- Use a idade do repositório para calibrar o tom: um repositório recente
-  sendo descrito como "em desenvolvimento inicial" é esperado; um repositório
-  antigo no mesmo estado merece ser descrito com mais neutralidade, sem
-  presumir o motivo
-
-Regras de formato:
-- Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos
-  de código markdown (sem ```json)
-- Cada seção deve ter conteúdo em Markdown (pode usar títulos, listas, negrito)"""
+Sobre as seções:
+- Gere exatamente 5 seções, na ordem abaixo — os dados fornecidos já vêm organizados
+  nos mesmos grupos temáticos, facilitando o mapeamento:
+  1. Visão Geral — o que é o componente, quem é responsável, status, criticidade
+  2. Arquitetura e Endpoints — API exposta, rotas principais, contrato OpenAPI
+  3. Integrações e Dependências — o que consome e quem consome este componente
+  4. Segurança e Observabilidade — autenticação e ferramentas de observabilidade
+  5. Dados e Infraestrutura — bancos de dados, runtime, deploy"""
 
 
-def montar_prompt_wiki_documentacao(repo_data: dict[str, Any]) -> str:
+def montar_prompt_wiki_documentacao(document_context: dict[str, Any]) -> str:
     """
-    Monta o prompt human com os dados do repositório para gerar a wiki.
+    Monta o prompt human com o document_context para gerar a wiki.
 
     Args:
-        repo_data: dados buscados pelo repository_fetch_node, incluindo
-                   os sinais determinísticos coletados pelo client
+        document_context: dados buscados pelo ingestao_fetch_node
 
     Returns:
-        String formatada com o conteúdo do repositório para o prompt
+        String formatada com o contexto do componente para o prompt
     """
-    readme = repo_data.get("readme_content") or "(README não encontrado)"
-    arquivos = repo_data.get("arquivos", [])
-    manifestos = repo_data.get("manifestos", {})
-    linguagem = repo_data.get("linguagem_principal") or "não identificada"
+    return f"""Analise os dados abaixo de um componente e gere uma documentação completa \
+em formato de wiki, organizada em seções.
 
-    arvore_resumida = "\n".join(f"- {a}" for a in arquivos[:80])
-    if len(arquivos) > 80:
-        arvore_resumida += f"\n... e mais {len(arquivos) - 80} arquivo(s)"
-
-    manifestos_texto = "\n\n".join(
-        f"### {nome}\n```\n{conteudo[:2000]}\n```"
-        for nome, conteudo in manifestos.items()
-    ) or "(nenhum arquivo de manifesto encontrado)"
-
-    return f"""Analise os dados abaixo de um repositório e gere uma documentação \
-completa em formato de wiki, organizada em seções.
-
-## Repositório
-- Nome: {repo_data.get('repo_name')}
-- Owner: {repo_data.get('owner')}
-- Linguagem principal detectada: {linguagem}
-- Criado em: {repo_data.get('repositorio_criado_em') or 'não informado'}
-- Descrição (metadados da plataforma): {repo_data.get('descricao') or 'não informada'}
-
-## Sinais detectados automaticamente (use como pistas, não como verdade absoluta)
-{_formatar_sinais_deterministicos(repo_data)}
-
-## README do repositório
-{readme}
-
-## Árvore de arquivos (parcial)
-{arvore_resumida}
-
-## Arquivos de manifesto encontrados
-{manifestos_texto}
+{_formatar_document_context(document_context)}
 
 ## O que gerar
 
 Retorne um JSON com este formato exato:
 
 {{
-  "titulo_geral": "nome do projeto — Documentação Técnica",
+  "titulo_geral": "nome do componente — Documentação Técnica",
   "secoes": [
     {{
       "titulo": "Visão Geral",
@@ -177,25 +181,30 @@ Retorne um JSON com este formato exato:
       "conteudo_markdown": "..."
     }},
     {{
-      "titulo": "Tecnologias e Bibliotecas",
+      "titulo": "Arquitetura e Endpoints",
       "ordem": 2,
       "conteudo_markdown": "..."
     }},
     {{
-      "titulo": "Estrutura do Projeto",
+      "titulo": "Integrações e Dependências",
       "ordem": 3,
       "conteudo_markdown": "..."
     }},
     {{
-      "titulo": "Como Rodar",
+      "titulo": "Segurança e Observabilidade",
       "ordem": 4,
+      "conteudo_markdown": "..."
+    }},
+    {{
+      "titulo": "Dados e Infraestrutura",
+      "ordem": 5,
       "conteudo_markdown": "..."
     }}
   ]
 }}
 
-Gere exatamente estas 4 seções, nesta ordem. Cada "conteudo_markdown" deve ter \
-entre 1 e 3 parágrafos (ou listas, quando fizer mais sentido)."""
+Cada "conteudo_markdown" deve ter entre 1 e 3 parágrafos (ou listas, quando fizer mais \
+sentido — por exemplo, para listar endpoints)."""
 
 
 # ===========================================================
@@ -206,157 +215,113 @@ entre 1 e 3 parágrafos (ou listas, quando fizer mais sentido)."""
 SYSTEM_CHECKLIST_TECNICO = """Você é um especialista em análise técnica e catalogação \
 de componentes de software em grandes organizações de tecnologia.
 
-Seu papel é analisar o conteúdo de um repositório e responder a um checklist técnico \
-fixo, com base SOMENTE em evidências encontradas no conteúdo fornecido.
+Seu papel é preencher um checklist técnico fixo para um componente, usando SOMENTE os \
+dados estruturados fornecidos — que já vêm normalizados e confiáveis, coletados por um \
+sistema interno de inventário.
 
-Regras obrigatórias — leia com atenção, são as mais importantes deste prompt:
-- Para CADA item do checklist, responda com um dos três status:
-  "confirmado"      → há evidência clara e direta (ex: dependência declarada)
+Regras obrigatórias:
+- Para os itens de status ("seguranca", "bancos_de_dados", "mensageria",
+  "tecnologia_principal", "uso_sicredi_flow", "armazenamento_objetos", "containerizacao"),
+  responda com um dos três status:
+  "confirmado"      → o dado estruturado confirma diretamente
   "parcial"         → há indício mas não certeza total
-  "nao_identificado" → nenhuma evidência encontrada
-- NUNCA marque algo como "confirmado" sem citar a evidência no campo "detalhe"
-- É esperado e correto que vários itens sejam "nao_identificado" — não force
-  a encontrar tecnologia que não está lá
+  "nao_identificado" → nenhuma evidência encontrada nos dados
+- Sempre cite no campo "detalhe" o dado exato que embasou a resposta
+- É esperado e correto que vários itens sejam "nao_identificado" quando o dado
+  estruturado simplesmente não contempla aquele item — não force uma resposta
 
-Regra crítica de desambiguação — uso técnico vs uso funcional:
-- Uma tecnologia pode aparecer no projeto para fins de infraestrutura/observabilidade
-  (logging, tracing, métricas) sem que o componente a use para lógica de negócio
-- Exemplo real: uma dependência de "logback-kafka" transporta LOGS via Kafka —
-  isso NÃO significa que o componente usa Kafka como mensageria de negócio
-- Ao avaliar "mensageria", "bancos_de_dados" e itens similares, verifique se a
-  dependência está associada a nomes/pacotes de logging, tracing ou métricas —
-  se estiver, NÃO marque como "confirmado" para uso funcional; explique a
-  distinção no campo "detalhe" (ex: "presente apenas para transporte de logs,
-  não para mensageria de negócio")
+Como localizar cada item nos dados estruturados fornecidos:
+- "seguranca": campo de autenticação (tipo e provedor)
+- "bancos_de_dados": lista de bancos de dados
+- "mensageria": procure nas integrações por endpoints cuja porta ou nome sugiram um
+  broker de mensageria (ex: porta 9093 é característica de Kafka); NÃO marque
+  "confirmado" só por existir uma integração HTTP comum
+- "tecnologia_principal": framework principal e lista de tecnologias declaradas
+- "uso_sicredi_flow": procure por funcionalidades de plataforma habilitadas (ex:
+  Consul, Vault, Kubernetes) — esses são sinais diretos de uso da plataforma
+  corporativa interna, não de uma biblioteca específica
+- "armazenamento_objetos": procure evidência de QUALQUER serviço de armazenamento de
+  objetos (AWS S3, Azure Blob Storage, Google Cloud Storage, ou equivalente interno) —
+  se os dados não mencionarem nada disso, marque "nao_identificado"
+- "containerizacao": procure no pipeline de deploy por ferramentas de build de imagem
+  (ex: Jib) ou orquestração de containers (ex: Kubernetes)
 
-Regra sobre detecção de "uso_sicredi_flow" — por padrão, não por nome:
-- NÃO procure apenas por bibliotecas com "sicredi" no nome
-- Considere evidência de plataforma interna corporativa quando encontrar:
-  (a) domínios internos informados nos sinais detectados (ex: *.sicredi.net)
-  (b) pacotes/grupos com namespace organizacional (ex: devops.sicredi,
-      io.sicredi, br.com.sicredi, ou variações de nome de grupo interno)
-  (c) plugins ou ferramentas de build específicos de uma organização
-- Essa abordagem funciona para qualquer linguagem — não é específica de Java
+Sobre "tipo_componente":
+- Use o tipo de aplicação informado nos dados para classificar como
+  "servico", "biblioteca", "batch" ou "modulo-compartilhado"
 
-Regra sobre containerização — considere também plugins de build:
-- Além de procurar por Dockerfile/docker-compose, verifique se o manifesto de
-  build declara uma imagem de container por plugin (ex: bloco "jib" no Gradle,
-  Cloud Native Buildpacks, ou equivalentes em outros ecossistemas)
-- Se encontrar isso, marque "confirmado" e cite a imagem base encontrada, se houver
-
-Regra sobre armazenamento de objetos — não presuma um único provedor de nuvem:
-- O item "armazenamento_objetos" NÃO é exclusivo da AWS — avalie evidência de
-  QUALQUER serviço de armazenamento de objetos, entre eles:
-  * AWS S3 (SDKs como boto3, aws-sdk, @aws-sdk/client-s3)
-  * Azure Blob Storage (SDKs como azure-storage-blob, Azure.Storage.Blobs)
-  * Google Cloud Storage (SDKs como google-cloud-storage)
-  * MinIO ou outro armazenamento compatível com S3 hospedado internamente
-- Identifique QUAL provedor foi encontrado e cite isso explicitamente no
-  campo "detalhe" (ex: "Azure Blob Storage via azure-storage-blob", não
-  apenas "confirmado" sem dizer qual serviço)
-- Se encontrar apenas um SDK de nuvem genérico (ex: boto3 usado só para
-  outro serviço, como um LLM hospedado na nuvem) sem evidência de uso
-  para armazenamento de arquivos, marque como "parcial" e explique a
-  distinção — o mesmo cuidado da regra de desambiguação técnico vs funcional
-
-Regra sobre uso da data de criação na classificação de maturidade:
-- Considere a idade do repositório (informada nos dados) ao definir
-  "classificacao_maturidade" — um repositório recente com poucas
-  funcionalidades é naturalmente "inicial"; o mesmo estado em um
-  repositório com anos de existência pode indicar "legado" ou abandono,
-  não "inicial"
-- Não presuma o motivo (abandono, baixa prioridade, etc) — apenas use a
-  idade como um dos fatores objetivos da classificação, junto com o
-  nível de documentação e a estrutura encontrada
+Sobre "limitacoes_detectadas":
+- Registre aqui qualquer lacuna relevante nos próprios dados fornecidos, por exemplo:
+  contrato OpenAPI não preenchido, lista de aprovadores vazia, responsável funcional
+  não informado no Jira — sem especular a razão dessas lacunas
+- Deixe como lista vazia [] se não houver nenhuma lacuna relevante
 
 Regras de formato:
 - Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos
   de código markdown"""
 
 
-def montar_prompt_checklist_tecnico(repo_data: dict[str, Any]) -> str:
+def montar_prompt_checklist_tecnico(document_context: dict[str, Any]) -> str:
     """
-    Monta o prompt human com os dados do repositório para o checklist técnico.
+    Monta o prompt human com o document_context para o checklist técnico.
 
     Args:
-        repo_data: dados buscados pelo repository_fetch_node, incluindo
-                   os sinais determinísticos coletados pelo client
+        document_context: dados buscados pelo ingestao_fetch_node
 
     Returns:
-        String formatada com o conteúdo do repositório e o schema esperado
+        String formatada com o contexto do componente e o schema esperado
     """
-    manifestos = repo_data.get("manifestos", {})
-    manifestos_texto = "\n\n".join(
-        f"### {nome}\n```\n{conteudo[:3000]}\n```"
-        for nome, conteudo in manifestos.items()
-    ) or "(nenhum arquivo de manifesto encontrado)"
+    return f"""Analise os dados abaixo e preencha o checklist técnico deste componente.
 
-    arquivos = repo_data.get("arquivos", [])
-    arvore_resumida = "\n".join(f"- {a}" for a in arquivos[:80])
-
-    registros_internos = repo_data.get("registros_internos_detectados", [])
-    multi_modulo = repo_data.get("multi_modulo_detectado", False)
-    modulos = repo_data.get("modulos_detectados", [])
-
-    return f"""Analise os dados abaixo e responda ao checklist técnico deste componente.
-
-## Repositório
-- Nome: {repo_data.get('repo_name')}
-- Linguagem principal: {repo_data.get('linguagem_principal') or 'não identificada'}
-- Criado em: {repo_data.get('repositorio_criado_em') or 'não informado'}
-
-## Sinais detectados automaticamente (use como pistas para os campos correspondentes)
-{_formatar_sinais_deterministicos(repo_data)}
-
-## Arquivos de manifesto
-{manifestos_texto}
-
-## Árvore de arquivos (parcial)
-{arvore_resumida}
+{_formatar_document_context(document_context)}
 
 ## Checklist técnico — retorne EXATAMENTE este JSON preenchido
 
 {{
-  "component_name": "{repo_data.get('repo_name')}",
-  "linguagem_principal": "{repo_data.get('linguagem_principal') or 'nao_identificado'}",
-  "repositorio_criado_em": {json.dumps(repo_data.get('repositorio_criado_em'), ensure_ascii=False)},
+  "component_name": "{document_context.get('component_name')}",
+  "linguagem_principal": "{document_context.get('classification', {}).get('main_language') or 'nao_identificado'}",
   "tipo_componente": "servico|biblioteca|batch|modulo-compartilhado",
-  "bibliotecas": ["lista de bibliotecas/dependências encontradas nos manifestos"],
+  "bibliotecas": {json.dumps(document_context.get('technology', {}).get('technologies', []), ensure_ascii=False)},
   "seguranca": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "evidência encontrada ou motivo de não identificação"
+    "detalhe": "cite o tipo e provedor de autenticação encontrado"
   }},
   "bancos_de_dados": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "quais bancos/vector stores, com evidência"
+    "detalhe": "cite os bancos de dados encontrados"
   }},
   "mensageria": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "ex: Kafka, RabbitMQ, SQS — com evidência. Se a única evidência for uso em logging/observabilidade, explique isso aqui e marque como nao_identificado ou parcial, não confirmado"
+    "detalhe": "cite o endpoint/evidência encontrada, ou a ausência dela"
   }},
   "tecnologia_principal": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "ex: FastAPI, Spring WebFlux, Spring Batch — com evidência"
+    "detalhe": "cite o framework principal encontrado"
   }},
   "uso_sicredi_flow": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite o domínio interno, namespace ou plugin encontrado como evidência"
+    "detalhe": "cite as funcionalidades de plataforma (Consul, Vault, Kubernetes etc) encontradas"
   }},
   "armazenamento_objetos": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "identifique o PROVEDOR encontrado — AWS S3, Azure Blob Storage, Google Cloud Storage, MinIO ou outro — com a evidência (SDK/dependência). Nunca assuma que é AWS S3 por padrão"
+    "detalhe": "identifique o provedor encontrado (AWS S3, Azure Blob Storage, Google Cloud Storage, ou outro), ou a ausência de evidência"
   }},
   "containerizacao": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "Dockerfile, docker-compose, ou plugin de build (ex: jib) com a imagem base, se houver"
+    "detalhe": "cite a evidência do pipeline de deploy encontrada"
   }},
-  "registros_internos_detectados": {json.dumps(registros_internos, ensure_ascii=False)},
-  "multi_modulo_detectado": {str(multi_modulo).lower()},
-  "modulos_detectados": {json.dumps(modulos, ensure_ascii=False)},
-  "limitacoes_detectadas": ["liste aqui qualquer limitação da sua própria análise, ex: 'projeto multi-módulo, análise cobriu apenas a raiz' — deixe vazio [] se não houver nenhuma"],
+  "limitacoes_detectadas": ["lacunas relevantes nos próprios dados fornecidos — lista vazia [] se não houver"],
   "tags": ["tags geradas com base na análise — mínimo 3"],
   "classificacao_maturidade": "inicial|em-desenvolvimento|maduro|legado",
   "nivel_documentacao": "inexistente|basico|intermediario|completo",
   "resumo_executivo": "resumo de 1-2 frases para exibição no catálogo",
-  "sugestoes_melhoria": ["lista de até 3 sugestões objetivas"]
+  "sugestoes_melhoria": ["lista de até 3 sugestões objetivas"],
+  "team_id": {json.dumps(document_context.get('ownership', {}).get('team_id'), ensure_ascii=False)},
+  "time_responsavel": {json.dumps(document_context.get('ownership', {}).get('responsible_team'), ensure_ascii=False)},
+  "projeto": {json.dumps(document_context.get('ownership', {}).get('project') or None, ensure_ascii=False)},
+  "tribo": {json.dumps(document_context.get('ownership', {}).get('tribe', {}).get('name'), ensure_ascii=False)},
+  "criticidade": {json.dumps(document_context.get('quality', {}).get('criticality'), ensure_ascii=False)},
+  "environment": {json.dumps(document_context.get('runtime', {}).get('resources_by_environment'), ensure_ascii=False)},
+  "status_aplicacao": {json.dumps(document_context.get('status'), ensure_ascii=False)},
+  "categoria_aplicacao": {json.dumps(document_context.get('classification', {}).get('application_type'), ensure_ascii=False)}
 }}"""
