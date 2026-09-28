@@ -1,8 +1,12 @@
 """
 nodes/persistence_node.py
 ---------------------------
-Quinto nó do grafo (Fase 7) — persiste a documentação wiki e o
-checklist técnico nas collections corretas do MongoDB.
+Quinto nó do grafo — persiste a documentação wiki e o checklist
+técnico nas collections corretas do MongoDB.
+
+Fase 9: única mudança é a referência de log a "sections" (antes
+        "secoes"), acompanhando a renomeação de campos do documento
+        persistido. A lógica de roteamento não muda.
 """
 
 import logging
@@ -19,6 +23,19 @@ logger = logging.getLogger(__name__)
 
 
 def persistence_node(state: DocumentacaoState) -> dict[str, Any]:
+    """
+    Persiste a documentação wiki e os metadados técnicos no MongoDB.
+
+    Roteamento (inalterado):
+      secoes_documentacao (estado) → collection documentos_gerados_previas
+      metadados_catalogo (estado)  → collection componentes_catalogados_metadados
+
+    Args:
+        state: Estado com secoes_documentacao e metadados_catalogo gerados
+
+    Returns:
+        dict com id_mongodb_previa e id_mongodb_metadados preenchidos
+    """
     logger.info("-" * 55)
     logger.info("[persistence_node] Iniciando persistência no MongoDB")
     logger.info("-" * 55)
@@ -66,7 +83,7 @@ def persistence_node(state: DocumentacaoState) -> dict[str, Any]:
             logger.info(
                 "[persistence_node] ✓ Documentação salva com ID: %s (%d seções)",
                 id_previa,
-                len(documento_wiki.get("secoes", [])),
+                len(documento_wiki.get("sections", [])),
             )
 
             logger.info(

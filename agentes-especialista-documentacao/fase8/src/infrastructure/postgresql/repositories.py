@@ -3,26 +3,16 @@ infrastructure/postgresql/repositories.py
 -------------------------------------------
 Repositório para a tabela objetos_gerados_previas no PostgreSQL.
 
-Fase 6: adicionados os campos versao, versao_ativa, motivo_reprovacao
-        e avaliado_por, preparando a estrutura para suportar o
-        versionamento de tentativas quando o agente de classificação
-        existir. A LÓGICA de versionamento (incrementar versao,
-        marcar versao_ativa=false em registros antigos) NÃO é
-        implementada nesta fase — apenas a estrutura da tabela.
+Fase 9: colunas renomeadas de português para inglês (ver
+        docs/RENOMEACAO_CAMPOS.md). Como a tabela já tem registros
+        reais (local e Sicredi), a migração usa RENAME COLUMN em vez
+        de recriar a tabela — preserva todos os dados existentes.
 
-Por que usamos a tabela objetos_gerados_previas?
-  O DevConsole da Sicredi já criou esta tabela no banco
-  atlas_documentacao_agent. Expandimos ela com as colunas
-  necessárias, mantendo compatibilidade com o que já existe.
-
-Padrão Repository: mesma abordagem do MongoDB.
-  O postgres_node nunca executa SQL diretamente — sempre
-  passa por este repositório.
-
-CREATE TABLE IF NOT EXISTS + ALTER TABLE:
-  Garante idempotência — se a tabela já existir sem os novos
-  campos (como no ambiente que já estava em uso desde a Fase 5),
-  o ALTER TABLE adiciona os campos que faltam sem apagar dados.
+CREATE TABLE IF NOT EXISTS + migração idempotente de nomes:
+  1. Se a tabela não existe, cria já com os nomes em inglês
+  2. Se a tabela existe com nomes antigos (PT), renomeia cada coluna
+     — verificando antes se ela ainda existe com o nome antigo, para
+     que rodar isso múltiplas vezes seja sempre seguro
 """
 
 import logging
@@ -35,46 +25,92 @@ logger = logging.getLogger(__name__)
 
 TABELA = "objetos_gerados_previas"
 
-# SQL de criação da tabela — usa IF NOT EXISTS para idempotência
-# Já inclui os campos de versionamento desde a criação (ambientes novos)
+# --- Criação da tabela (ambientes novos, já com nomes em inglês) ---
 SQL_CRIAR_TABELA = f"""
 CREATE TABLE IF NOT EXISTS {TABELA} (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_id             VARCHAR(100),
-    transaction_id       VARCHAR(100),
-    component_name       VARCHAR(200) NOT NULL,
-    application_name     VARCHAR(200),
-    team_id              VARCHAR(100),
-    time_responsavel     VARCHAR(200),
-    projeto              VARCHAR(200),
-    tribo                VARCHAR(200),
-    tipo_aplicacao       VARCHAR(100),
-    categoria_aplicacao  VARCHAR(100),
-    criticidade          VARCHAR(50),
-    environment          VARCHAR(50),
-    status_aplicacao     VARCHAR(50),
-    repository           VARCHAR(500),
-    id_mongodb_previa    VARCHAR(100),
-    id_mongodb_metadados VARCHAR(100),
-    status_cadastro      VARCHAR(50) DEFAULT 'pendente_aprovacao',
-    versao               INTEGER DEFAULT 1,
-    versao_ativa         BOOLEAN DEFAULT TRUE,
-    motivo_reprovacao    TEXT,
-    avaliado_por         VARCHAR(100),
-    criado_em            TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    atualizado_em        TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id                 VARCHAR(100),
+    transaction_id           VARCHAR(100),
+    component_name           VARCHAR(200) NOT NULL,
+    application_name         VARCHAR(200),
+    team_id                  VARCHAR(100),
+    responsible_team         VARCHAR(200),
+    project                  VARCHAR(200),
+    tribe                    VARCHAR(200),
+    application_type         VARCHAR(100),
+    application_category     VARCHAR(100),
+    criticality               VARCHAR(50),
+    environment               TEXT[],
+    application_status       VARCHAR(50),
+    repository                VARCHAR(500),
+    mongodb_documentation_id VARCHAR(100),
+    mongodb_metadata_id      VARCHAR(100),
+    registration_status      VARCHAR(50) DEFAULT 'pendente_aprovacao',
+    version                   INTEGER DEFAULT 1,
+    is_active_version        BOOLEAN DEFAULT TRUE,
+    rejection_reason          TEXT,
+    evaluated_by               VARCHAR(100),
+    created_at                 TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at                 TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 """
 
-# ALTER TABLE idempotente — garante que tabelas criadas ANTES da Fase 6
-# (como a do ambiente Sicredi, criada na Fase 5) recebam os novos campos
-# sem perder os dados já existentes.
-SQL_ADICIONAR_CAMPOS_FASE6 = f"""
-ALTER TABLE {TABELA}
-    ADD COLUMN IF NOT EXISTS versao INTEGER DEFAULT 1,
-    ADD COLUMN IF NOT EXISTS versao_ativa BOOLEAN DEFAULT TRUE,
-    ADD COLUMN IF NOT EXISTS motivo_reprovacao TEXT,
-    ADD COLUMN IF NOT EXISTS avaliado_por VARCHAR(100);
+# --- Migração idempotente: renomeia colunas antigas (PT) para os novos
+#     nomes (EN), somente se a coluna antiga ainda existir. Seguro
+#     rodar em toda inicialização, mesmo em bancos já migrados ou
+#     criados do zero já com os nomes novos. ---
+SQL_MIGRAR_NOMES_FASE9 = f"""
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='tribo') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN tribo TO tribe;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='versao') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN versao TO version;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='projeto') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN projeto TO project;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='criado_em') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN criado_em TO created_at;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='criticidade') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN criticidade TO criticality;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='avaliado_por') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN avaliado_por TO evaluated_by;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='versao_ativa') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN versao_ativa TO is_active_version;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='atualizado_em') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN atualizado_em TO updated_at;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='tipo_aplicacao') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN tipo_aplicacao TO application_type;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='status_cadastro') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN status_cadastro TO registration_status;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='status_aplicacao') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN status_aplicacao TO application_status;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='time_responsavel') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN time_responsavel TO responsible_team;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='id_mongodb_previa') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN id_mongodb_previa TO mongodb_documentation_id;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='motivo_reprovacao') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN motivo_reprovacao TO rejection_reason;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='categoria_aplicacao') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN categoria_aplicacao TO application_category;
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='{TABELA}' AND column_name='id_mongodb_metadados') THEN
+        ALTER TABLE {TABELA} RENAME COLUMN id_mongodb_metadados TO mongodb_metadata_id;
+    END IF;
+END $$;
 """
 
 SQL_INSERIR = f"""
@@ -84,44 +120,44 @@ INSERT INTO {TABELA} (
     component_name,
     application_name,
     team_id,
-    time_responsavel,
-    projeto,
-    tribo,
-    tipo_aplicacao,
-    categoria_aplicacao,
-    criticidade,
+    responsible_team,
+    project,
+    tribe,
+    application_type,
+    application_category,
+    criticality,
     environment,
-    status_aplicacao,
+    application_status,
     repository,
-    id_mongodb_previa,
-    id_mongodb_metadados,
-    status_cadastro,
-    versao,
-    versao_ativa,
-    criado_em,
-    atualizado_em
+    mongodb_documentation_id,
+    mongodb_metadata_id,
+    registration_status,
+    version,
+    is_active_version,
+    created_at,
+    updated_at
 ) VALUES (
     %(event_id)s,
     %(transaction_id)s,
     %(component_name)s,
     %(application_name)s,
     %(team_id)s,
-    %(time_responsavel)s,
-    %(projeto)s,
-    %(tribo)s,
-    %(tipo_aplicacao)s,
-    %(categoria_aplicacao)s,
-    %(criticidade)s,
+    %(responsible_team)s,
+    %(project)s,
+    %(tribe)s,
+    %(application_type)s,
+    %(application_category)s,
+    %(criticality)s,
     %(environment)s,
-    %(status_aplicacao)s,
+    %(application_status)s,
     %(repository)s,
-    %(id_mongodb_previa)s,
-    %(id_mongodb_metadados)s,
-    %(status_cadastro)s,
-    %(versao)s,
-    %(versao_ativa)s,
-    %(criado_em)s,
-    %(atualizado_em)s
+    %(mongodb_documentation_id)s,
+    %(mongodb_metadata_id)s,
+    %(registration_status)s,
+    %(version)s,
+    %(is_active_version)s,
+    %(created_at)s,
+    %(updated_at)s
 )
 RETURNING id;
 """
@@ -129,7 +165,7 @@ RETURNING id;
 SQL_BUSCAR_POR_EVENT_ID = f"""
 SELECT * FROM {TABELA}
 WHERE event_id = %(event_id)s
-ORDER BY criado_em DESC
+ORDER BY created_at DESC
 LIMIT 1;
 """
 
@@ -138,11 +174,9 @@ class ObjetosGeradosPreViasRepository:
     """
     Repositório para a tabela objetos_gerados_previas.
 
-    Fase 6: os campos versao, versao_ativa, motivo_reprovacao e
-            avaliado_por existem na tabela mas a lógica de
-            versionamento (múltiplas tentativas) ainda não está
-            implementada. Todo registro inserido hoje nasce com
-            versao=1 e versao_ativa=true.
+    Fase 9: campos de negócio agora lidos do dict `metadados` usando
+            nomes em inglês (ex: metadados.get("responsible_team") em
+            vez de metadados.get("time_responsavel")).
     """
 
     def __init__(self, conn: PgConnection) -> None:
@@ -151,17 +185,19 @@ class ObjetosGeradosPreViasRepository:
 
     def garantir_tabela(self) -> None:
         """
-        Cria a tabela se não existir, e adiciona os campos da Fase 6
-        caso a tabela já exista de uma fase anterior.
+        Cria a tabela se não existir (já com nomes em inglês), e migra
+        os nomes de coluna de instalações anteriores (PT → EN).
 
-        Seguro chamar múltiplas vezes — nunca apaga dados.
+        Seguro chamar múltiplas vezes — nunca apaga dados, e a
+        migração de nomes só age sobre colunas que ainda existem com
+        o nome antigo.
         """
         with self._conn.cursor() as cur:
             cur.execute(SQL_CRIAR_TABELA)
-            cur.execute(SQL_ADICIONAR_CAMPOS_FASE6)
+            cur.execute(SQL_MIGRAR_NOMES_FASE9)
         self._conn.commit()
         logger.info(
-            "Tabela '%s' verificada/atualizada com sucesso (campos Fase 6 garantidos).",
+            "Tabela '%s' verificada/migrada com sucesso (nomes em inglês garantidos).",
             TABELA,
         )
 
@@ -175,8 +211,11 @@ class ObjetosGeradosPreViasRepository:
         """
         Insere o pré-cadastro do componente na tabela.
 
-        Fase 6: todo registro novo nasce com versao=1 e
-                versao_ativa=true.
+        Args:
+            metadados: dict gerado pelo cataloging_node (chaves em inglês)
+            previa: dict gerado pelo documentation_node
+            id_mongodb_previa: ID do documento na collection previas
+            id_mongodb_metadados: ID do documento na collection metadados
 
         Returns:
             str: UUID do registro inserido no PostgreSQL
@@ -189,22 +228,22 @@ class ObjetosGeradosPreViasRepository:
             "component_name": metadados.get("component_name"),
             "application_name": metadados.get("application_name"),
             "team_id": metadados.get("team_id"),
-            "time_responsavel": metadados.get("time_responsavel"),
-            "projeto": metadados.get("projeto"),
-            "tribo": metadados.get("tribo"),
-            "tipo_aplicacao": metadados.get("tipo_aplicacao"),
-            "categoria_aplicacao": metadados.get("categoria_aplicacao"),
-            "criticidade": metadados.get("criticidade"),
+            "responsible_team": metadados.get("responsible_team"),
+            "project": metadados.get("project"),
+            "tribe": metadados.get("tribe"),
+            "application_type": metadados.get("application_type"),
+            "application_category": metadados.get("application_category"),
+            "criticality": metadados.get("criticality"),
             "environment": metadados.get("environment"),
-            "status_aplicacao": metadados.get("status_aplicacao"),
+            "application_status": metadados.get("application_status"),
             "repository": metadados.get("repository"),
-            "id_mongodb_previa": id_mongodb_previa,
-            "id_mongodb_metadados": id_mongodb_metadados,
-            "status_cadastro": "pendente_aprovacao",
-            "versao": 1,
-            "versao_ativa": True,
-            "criado_em": agora,
-            "atualizado_em": agora,
+            "mongodb_documentation_id": id_mongodb_previa,
+            "mongodb_metadata_id": id_mongodb_metadados,
+            "registration_status": "pendente_aprovacao",
+            "version": 1,
+            "is_active_version": True,
+            "created_at": agora,
+            "updated_at": agora,
         }
 
         with self._conn.cursor() as cur:
@@ -215,7 +254,7 @@ class ObjetosGeradosPreViasRepository:
 
         id_gerado = str(resultado["id"])
         logger.info(
-            "Pré-cadastro inserido em '%s' com ID: %s (versao=1)",
+            "Pré-cadastro inserido em '%s' com ID: %s (version=1)",
             TABELA,
             id_gerado,
         )

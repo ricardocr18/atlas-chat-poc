@@ -1,15 +1,11 @@
 """
 nodes/cataloging_node.py
 --------------------------
-Quarto nó do grafo (Fase 8) — gera o checklist técnico via LLM OpenAI,
+Quarto nó do grafo (Fase 8/9) — gera o checklist técnico via LLM OpenAI,
 a partir do document_context estruturado vindo do atlas-apis-ingestao.
 
-Fase 7: campos de negócio (team_id, criticidade, environment etc)
-        ficavam explicitamente None — não existiam na entrada.
-Fase 8: esses campos agora vêm preenchidos com dado real, extraído
-        diretamente do document_context (não pela LLM — ver
-        prompts_catalog_document.py, onde já são pré-preenchidos
-        no próprio template do prompt).
+Fase 9: nomes de campo do documento persistido migrados para inglês
+        (ver docs/RENOMEACAO_CAMPOS.md).
 """
 
 import json
@@ -48,8 +44,7 @@ def _chamar_llm_checklist(document_context: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         dict estruturado no formato da collection
-        componentes_catalogados_metadados, já com os campos de negócio
-        preenchidos (não mais None como na Fase 7)
+        componentes_catalogados_metadados, com nomes de campo em inglês
     """
     settings = get_settings()
 
@@ -83,10 +78,10 @@ def _chamar_llm_checklist(document_context: dict[str, Any]) -> dict[str, Any]:
     # --- Campos de rastreabilidade ---
     checklist["event_id"] = document_context.get("component_name")
     checklist["repository"] = document_context.get("repository")
-    checklist["fonte_dados"] = "atlas_ingestao_api.document_context"
-    checklist["catalogado_em"] = datetime.now(timezone.utc).isoformat()
-    checklist["catalogado_por"] = settings.openai_model
-    checklist["tokens_utilizados"] = resposta.usage_metadata
+    checklist["data_source"] = "atlas_ingestao_api.document_context"
+    checklist["cataloged_at"] = datetime.now(timezone.utc).isoformat()
+    checklist["cataloged_by"] = settings.openai_model
+    checklist["tokens_used"] = resposta.usage_metadata
 
     return checklist
 
@@ -124,17 +119,17 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
         )
         logger.info(
             "[cataloging_node] ✓ Time responsável: '%s' | Criticidade: '%s'",
-            metadados.get("time_responsavel"),
-            metadados.get("criticidade"),
+            metadados.get("responsible_team"),
+            metadados.get("criticality"),
         )
         for item in [
-            "seguranca",
-            "bancos_de_dados",
-            "mensageria",
-            "tecnologia_principal",
-            "uso_sicredi_flow",
-            "armazenamento_objetos",
-            "containerizacao",
+            "security",
+            "databases",
+            "messaging",
+            "main_technology",
+            "sicredi_flow_usage",
+            "object_storage",
+            "containerization",
         ]:
             resultado_item = metadados.get(item, {})
             logger.info(
@@ -143,7 +138,7 @@ def cataloging_node(state: DocumentacaoState) -> dict[str, Any]:
                 resultado_item.get("status", "?") if isinstance(resultado_item, dict) else resultado_item,
             )
         logger.info(
-            "[cataloging_node] ✓ Catalogado por: '%s'", metadados.get("catalogado_por")
+            "[cataloging_node] ✓ Catalogado por: '%s'", metadados.get("cataloged_by")
         )
         logger.info("[cataloging_node] ✓ Seguindo para persistence_node")
 

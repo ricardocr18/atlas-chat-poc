@@ -6,21 +6,17 @@ Prompts utilizados pela LLM OpenAI/gpt-oss nos nós de geração (Fase 9).
 Histórico de correções neste arquivo:
   C1) Detecção de contrato OpenAPI aceita "content" (string) e
       "contents" (array) — evita falso negativo.
-  C2) Ordem de prioridade para detecção de mensageria: resource_type
-      TOPIC > SASL/KAFKA na autenticação > KAFKA em enabled_features >
-      heurística de porta (último recurso, nunca "confirmado").
-  C3) Campos de CMDB e histórico de deploy por ambiente incorporados
-      na formatação, antes ignorados.
-  C4) NOVO — o diagrama Mermaid da seção de integrações estava saindo
-      como campo extra "conteudo_diagrama" em vez de embutido dentro
-      do próprio "conteudo_markdown". Reforçada regra explícita
-      proibindo qualquer campo além dos 4 especificados.
-  C5) NOVO — o campo "fontes_utilizadas" estava recebendo caminhos
-      traduzidos/simplificados (ex: "identificacao.status",
-      "endpoints.expostos") que não existem de verdade no
-      document_context, inviabilizando o propósito de auditoria.
-      Adicionada lista fechada dos caminhos reais válidos, com
-      instrução explícita de nunca traduzir ou inventar variações.
+  C2) Ordem de prioridade para detecção de mensageria.
+  C3) Campos de CMDB e histórico de deploy por ambiente incorporados.
+  C4) Diagrama Mermaid embutido dentro do content_markdown, nunca em
+      campo separado.
+  C5) "sources_used" usa lista fechada de caminhos reais do
+      document_context — nunca traduzidos ou inventados.
+  C6) NOVO — nomes de campo do schema de SAÍDA (o que persistimos no
+      MongoDB/PostgreSQL) migrados de português para inglês, alinhando
+      com o padrão já usado pelo document_context do atlas-apis-ingestao.
+      Ver docs/RENOMEACAO_CAMPOS.md para a tabela completa. Os CAMINHOS
+      de entrada (document_context) não mudam — já eram em inglês.
 """
 
 import json
@@ -58,7 +54,6 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
     consumidos = integrations.get("consumed", {})
     consumidores = integrations.get("consumers", {})
 
-    # --- Correção C1: aceita tanto "content" (string) quanto "contents" (array) ---
     openapi_contract = api.get("openapi_contract", {})
     openapi_preenchido = bool(openapi_contract.get("content")) or bool(
         openapi_contract.get("contents")
@@ -70,7 +65,6 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
             f"ambiente: {openapi_contract.get('environment')})"
         )
 
-    # --- Correção C3: bloco CMDB, antes ignorado ---
     cmdb_texto = "(nenhum dado de CMDB associado)"
     if cmdb:
         dominios = ", ".join(d.get("name", "") for d in cmdb.get("service_domains", []))
@@ -80,7 +74,6 @@ def _formatar_document_context(document_context: dict[str, Any]) -> str:
 - Grupo aprovador: {cmdb.get('team', {}).get('approving_group') or '(não informado)'}
 - Domínios de serviço: {dominios or '(nenhum)'}"""
 
-    # --- Correção C3: histórico de deploy por ambiente, antes ignorado ---
     deployments_por_ambiente = deployment.get("deployments", {})
     deployments_texto = "(sem histórico de deploy por ambiente)"
     if deployments_por_ambiente:
@@ -172,8 +165,9 @@ Contrato OpenAPI formal preenchido: {'sim' + openapi_detalhe if openapi_preenchi
 
 
 # Lista fechada dos caminhos reais válidos no document_context — usada na
-# regra de "fontes_utilizadas" (Correção C5). A LLM deve citar SOMENTE
-# caminhos desta lista, exatamente como escritos aqui.
+# regra de "sources_used". A LLM deve citar SOMENTE caminhos desta lista,
+# exatamente como escritos aqui. Estes são caminhos de ENTRADA (dados do
+# atlas-apis-ingestao) e não mudam com a renomeação dos campos de SAÍDA.
 CAMINHOS_VALIDOS_DOCUMENT_CONTEXT = """component_name, description, status, category, visibility, repository,
 cmdb.component_key, cmdb.application.name, cmdb.team.code, cmdb.team.approving_group, cmdb.service_domains,
 ownership.responsible_team, ownership.tribe.name, ownership.project, ownership.approvers,
@@ -222,42 +216,37 @@ Regras obrigatórias de conteúdo:
   (ex: "não há aprovadores cadastrados") — NÃO presuma o motivo
 - Quando os campos de ownership detalhado estiverem preenchidos (aprovadores, QA, UX,
   colaboradores temporários, times colaboradores), aproveite-os na Visão Geral para
-  descrever a composição real do time (ex: "squad multidisciplinar com QA e UX dedicados")
-  — só mencione o que realmente estiver presente nos dados
-- Quando houver dados de CMDB, use o nome oficial da aplicação (application.name) e o
-  grupo aprovador para enriquecer a Visão Geral, se agregarem contexto útil
-- Quando houver histórico de deploy por ambiente, mencione na seção de Dados e
-  Infraestrutura em qual ambiente o componente está mais atualizado e se há
-  defasagem de versão entre ambientes (isso é fato observável, não invenção)
+  descrever a composição real do time — só mencione o que realmente estiver presente
+- Quando houver dados de CMDB, use o nome oficial da aplicação e o grupo aprovador
+  para enriquecer a Visão Geral, se agregarem contexto útil
+- Quando houver histórico de deploy por ambiente, mencione em qual ambiente o
+  componente está mais atualizado e se há defasagem de versão entre ambientes
 
 Regra crítica de ESTRUTURA DE SAÍDA — leia com atenção, ela evita um erro observado na prática:
 - Cada seção do JSON de resposta deve ter EXATAMENTE estes 4 campos, nenhum a mais:
-  "titulo", "ordem", "conteudo_markdown", "fontes_utilizadas"
-- NUNCA crie campos adicionais como "conteudo_diagrama", "resumo", "detalhes" ou qualquer
-  outro nome — se você gerar um diagrama Mermaid (seção 3), ele deve ficar DENTRO da
-  própria string de "conteudo_markdown" daquela seção, como parte do mesmo texto
-  markdown (prosa seguida do bloco ```mermaid ... ``` no final do mesmo campo)
+  "title", "order", "content_markdown", "sources_used"
+- NUNCA crie campos adicionais como "diagram_content", "summary" ou qualquer outro nome —
+  se você gerar um diagrama Mermaid (seção 3), ele deve ficar DENTRO da própria string de
+  "content_markdown" daquela seção, como parte do mesmo texto markdown
 
-Regra sobre o campo "fontes_utilizadas" — leia com atenção, ela evita um erro observado
-na prática (a LLM às vezes traduz ou simplifica nomes de campos, tornando a citação inútil
+Regra sobre o campo "sources_used" — leia com atenção, ela evita um erro observado na
+prática (a LLM às vezes traduz ou simplifica nomes de campos, tornando a citação inútil
 para auditoria):
 - Cite SOMENTE caminhos EXATOS da lista abaixo, escritos exatamente como aparecem aqui
-  (em inglês, com a pontuação e capitalização exatas) — NUNCA traduza para português,
-  NUNCA invente sub-caminhos, NUNCA simplifique (ex: "status" está certo; "identificacao.status"
-  está errado e não deve ser usado)
+  (em inglês, com a pontuação e capitalização exatas) — NUNCA traduza, NUNCA invente
+  sub-caminhos, NUNCA simplifique (ex: "status" está certo; "identificacao.status" está
+  errado)
 - Lista de caminhos válidos:
   {CAMINHOS_VALIDOS_DOCUMENT_CONTEXT}
 - Se uma seção não usar diretamente nenhum desses campos, use uma lista vazia []
 
 Auto-checagem antes de responder (aplique mentalmente, sem custo de nova chamada):
-- Releia cada frase que você escreveu: ela corresponde a um fato presente nos dados
-  fornecidos? "Corresponder" significa que o fato é verdadeiro segundo os dados —
-  NÃO significa copiar o campo literalmente. Reescrever com suas palavras continua
-  correspondendo ao fato, e é o comportamento esperado
+- Releia cada frase: ela corresponde a um fato presente nos dados? "Corresponder" NÃO
+  significa copiar o campo literalmente — reescrever com suas palavras é o esperado
 - Se uma frase não tiver correspondência com nenhum dado fornecido, remova-a
-- Confira se cada "fontes_utilizadas" citada está literalmente na lista de caminhos válidos
-  acima — se não estiver, corrija ou remova antes de responder
-- Confira se cada seção tem exatamente os 4 campos esperados, sem nenhum campo extra
+- Confira se cada "sources_used" citada está literalmente na lista de caminhos válidos
+- Confira se cada seção tem exatamente os 4 campos esperados ("title", "order",
+  "content_markdown", "sources_used"), sem nenhum campo extra
 
 Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos de código markdown \
 fora da estrutura pedida.
@@ -267,11 +256,10 @@ Sobre as seções — gere exatamente 5, na ordem abaixo:
   2. Arquitetura e Endpoints — API exposta, rotas principais (resumidas por padrão se
      forem muitas), contrato OpenAPI
   3. Integrações e Dependências — o que consome e quem consome este componente, em
-     prosa, seguida (dentro do MESMO conteudo_markdown desta seção) de um diagrama
+     prosa, seguida (dentro do MESMO content_markdown desta seção) de um diagrama
      Mermaid (```mermaid ... ```) do tipo "graph LR" representando essas mesmas
-     relações (ex: A --> B para cada integração consumida ou consumidora) — o
-     diagrama é só uma representação visual do mesmo dado já descrito em texto,
-     não uma informação nova, e não deve virar um campo separado
+     relações — use o nome do componente (component_name) como identificador do nó
+     central do diagrama, não o hostname/DNS completo, para manter o diagrama legível
   4. Segurança e Observabilidade — autenticação e ferramentas de observabilidade
   5. Dados e Infraestrutura — bancos de dados, runtime, deploy (incluindo o histórico
      de versões por ambiente, quando disponível)"""
@@ -297,47 +285,47 @@ em formato de wiki, organizada em seções.
 Retorne um JSON com este formato exato — cada seção tem EXATAMENTE 4 campos, nunca mais:
 
 {{
-  "titulo_geral": "nome do componente — Documentação Técnica",
-  "secoes": [
+  "general_title": "nome do componente — Documentação Técnica",
+  "sections": [
     {{
-      "titulo": "Visão Geral",
-      "ordem": 1,
-      "conteudo_markdown": "...",
-      "fontes_utilizadas": ["ownership.responsible_team", "quality.criticality"]
+      "title": "Visão Geral",
+      "order": 1,
+      "content_markdown": "...",
+      "sources_used": ["ownership.responsible_team", "quality.criticality"]
     }},
     {{
-      "titulo": "Arquitetura e Endpoints",
-      "ordem": 2,
-      "conteudo_markdown": "...",
-      "fontes_utilizadas": ["api.exposed_endpoints", "api.openapi_contract"]
+      "title": "Arquitetura e Endpoints",
+      "order": 2,
+      "content_markdown": "...",
+      "sources_used": ["api.exposed_endpoints", "api.openapi_contract"]
     }},
     {{
-      "titulo": "Integrações e Dependências",
-      "ordem": 3,
-      "conteudo_markdown": "texto em prosa descrevendo as integrações...\\n\\n```mermaid\\ngraph LR\\nA --> B\\n```",
-      "fontes_utilizadas": ["integrations.consumed", "integrations.consumers"]
+      "title": "Integrações e Dependências",
+      "order": 3,
+      "content_markdown": "texto em prosa descrevendo as integrações...\\n\\n```mermaid\\ngraph LR\\ncomponent_name --> outro-componente\\n```",
+      "sources_used": ["integrations.consumed", "integrations.consumers"]
     }},
     {{
-      "titulo": "Segurança e Observabilidade",
-      "ordem": 4,
-      "conteudo_markdown": "...",
-      "fontes_utilizadas": ["security.authentication.application", "observability.enabled"]
+      "title": "Segurança e Observabilidade",
+      "order": 4,
+      "content_markdown": "...",
+      "sources_used": ["security.authentication.application", "observability.enabled"]
     }},
     {{
-      "titulo": "Dados e Infraestrutura",
-      "ordem": 5,
-      "conteudo_markdown": "...",
-      "fontes_utilizadas": ["data.databases", "deployment.deployments"]
+      "title": "Dados e Infraestrutura",
+      "order": 5,
+      "content_markdown": "...",
+      "sources_used": ["data.databases", "deployment.deployments"]
     }}
   ]
 }}
 
 Repare no exemplo da seção 3: o bloco ```mermaid``` está DENTRO da mesma string de \
-"conteudo_markdown", não em um campo separado. Siga exatamente esse padrão.
+"content_markdown", usando o nome do componente como nó, não o hostname completo.
 
 Lembre-se: prosa corrida, sem rótulos "Campo: valor", listas longas resumidas por \
-categoria, e fontes_utilizadas usando apenas os caminhos exatos da lista fornecida \
-nas instruções do sistema."""
+categoria, e sources_used usando apenas os caminhos exatos da lista fornecida nas \
+instruções do sistema."""
 
 
 # ===========================================================
@@ -353,64 +341,54 @@ dados estruturados fornecidos — que já vêm normalizados e confiáveis, colet
 sistema interno de inventário.
 
 Regras obrigatórias:
-- Para os itens de status ("seguranca", "bancos_de_dados", "mensageria",
-  "tecnologia_principal", "uso_sicredi_flow", "armazenamento_objetos", "containerizacao"),
-  responda com um dos três status:
+- Para os itens de status ("security", "databases", "messaging", "main_technology",
+  "sicredi_flow_usage", "object_storage", "containerization"), responda com um dos
+  três valores em "status":
   "confirmado"      → o dado estruturado confirma diretamente
   "parcial"         → há indício mas não certeza total
   "nao_identificado" → nenhuma evidência encontrada nos dados
-- Sempre cite no campo "detalhe" o dado exato que embasou a resposta
+- Sempre cite no campo "detail" o dado exato que embasou a resposta
 - É esperado e correto que vários itens sejam "nao_identificado" quando o dado
   estruturado simplesmente não contempla aquele item — não force uma resposta
 
 Como localizar cada item nos dados estruturados fornecidos:
-- "seguranca": campo de autenticação (tipo e provedor)
-- "bancos_de_dados": lista de bancos de dados
-- "mensageria": siga esta ORDEM DE PRIORIDADE, do sinal mais forte para o mais fraco —
+- "security": campo de autenticação (tipo e provedor)
+- "databases": lista de bancos de dados
+- "messaging": siga esta ORDEM DE PRIORIDADE, do sinal mais forte para o mais fraco —
   pare no primeiro que encontrar evidência:
   1. Nas integrações (consumidas ou consumidoras), procure algum item com
-     "resource_type": "TOPIC" — esse é o sinal MAIS DIRETO possível, cite o
-     resource_name encontrado
+     "resource_type": "TOPIC" — sinal MAIS DIRETO possível, cite o resource_name
   2. Na autenticação de infraestrutura, procure entradas com "target": "KAFKA" ou
-     mecanismo SASL associado a Kafka — também um sinal direto e confiável
-  3. Em runtime.enabled_features, procure literalmente "KAFKA" — sinal direto de que
-     a plataforma está habilitada para o componente, mesmo sem uso explícito nas
-     integrações
-  4. SOMENTE se nenhum dos três sinais acima existir, procure nas integrações por
-     endpoints cuja porta sugira um broker (porta 9093 é característica de Kafka) —
-     esta é uma heurística fraca; ao usá-la, marque no máximo "parcial", nunca
-     "confirmado", e explique que é uma inferência por porta, não confirmação direta
+     mecanismo SASL associado a Kafka
+  3. Em runtime.enabled_features, procure literalmente "KAFKA"
+  4. SOMENTE se nenhum dos três sinais acima existir, procure endpoints cuja porta
+     sugira um broker (porta 9093 é característica de Kafka) — heurística fraca; ao
+     usá-la, marque no máximo "parcial", nunca "confirmado"
   Se nenhum dos quatro sinais existir, marque "nao_identificado"
-- "tecnologia_principal": framework principal e lista de tecnologias declaradas
-- "uso_sicredi_flow": procure por funcionalidades de plataforma habilitadas (ex:
-  Consul, Vault, Kubernetes) — esses são sinais diretos de uso da plataforma
-  corporativa interna, não de uma biblioteca específica. Contas de automação
-  responsáveis por deploys (ex: um "updated_by" que parece um usuário de sistema/bot,
-  não uma pessoa) também são um sinal complementar de pipeline corporativo padronizado
-- "armazenamento_objetos": procure evidência de QUALQUER serviço de armazenamento de
-  objetos (AWS S3, Azure Blob Storage, Google Cloud Storage, ou equivalente interno) —
-  se os dados não mencionarem nada disso, marque "nao_identificado"
-- "containerizacao": procure no pipeline de deploy por ferramentas de build de imagem
+- "main_technology": framework principal e lista de tecnologias declaradas
+- "sicredi_flow_usage": procure por funcionalidades de plataforma habilitadas (ex:
+  Consul, Vault, Kubernetes) — sinais diretos de uso da plataforma corporativa interna.
+  Contas de automação responsáveis por deploys (ex: um "updated_by" que parece um
+  usuário de sistema/bot) também são um sinal complementar
+- "object_storage": procure evidência de QUALQUER serviço de armazenamento de objetos
+  (AWS S3, Azure Blob Storage, Google Cloud Storage, ou equivalente interno)
+- "containerization": procure no pipeline de deploy por ferramentas de build de imagem
   (ex: Jib) ou orquestração de containers (ex: Kubernetes)
 
 Sobre o contrato OpenAPI: o texto fornecido já indica de forma confiável se o contrato
-está preenchido ("sim"/"não") — use essa informação diretamente, ela já trata as duas
-formas possíveis em que o dado de origem pode vir estruturado.
+está preenchido ("sim"/"não") — use essa informação diretamente.
 
-Sobre "tipo_componente":
+Sobre "component_type":
 - Use o tipo de aplicação informado nos dados para classificar como
   "servico", "biblioteca", "batch" ou "modulo-compartilhado"
 
 Distinção crítica — fato ausente vs. opinião técnica (não misture os dois campos):
-- "limitacoes_detectadas": SOMENTE lacunas objetivas e verificáveis nos DADOS fornecidos
-  (ex: "contrato OpenAPI não preenchido", "responsável funcional não informado") — é
-  um registro de fato, sem juízo de valor sobre se isso é bom ou ruim
-- "sugestoes_melhoria": aqui SIM cabe julgamento técnico seu, com base na sua experiência
-  (ex: "considerar adicionar cache" é uma recomendação, não um fato observado)
-- Não coloque a mesma informação nos dois campos com fraseado diferente — se é uma
-  lacuna de dado, vai em limitacoes_detectadas; se é um conselho de melhoria técnica,
-  vai em sugestoes_melhoria
-- Deixe limitacoes_detectadas como lista vazia [] se não houver nenhuma lacuna relevante
+- "detected_limitations": SOMENTE lacunas objetivas e verificáveis nos DADOS fornecidos
+  (ex: "contrato OpenAPI não preenchido") — registro de fato, sem juízo de valor
+- "improvement_suggestions": aqui SIM cabe julgamento técnico seu (ex: "considerar
+  adicionar cache" é uma recomendação, não um fato observado)
+- Não coloque a mesma informação nos dois campos com fraseado diferente
+- Deixe "detected_limitations" como lista vazia [] se não houver nenhuma lacuna relevante
 
 Regras de formato:
 - Retorne APENAS um JSON válido — sem texto antes ou depois, sem blocos
@@ -435,49 +413,49 @@ def montar_prompt_checklist_tecnico(document_context: dict[str, Any]) -> str:
 
 {{
   "component_name": "{document_context.get('component_name')}",
-  "linguagem_principal": "{document_context.get('classification', {}).get('main_language') or 'nao_identificado'}",
-  "tipo_componente": "servico|biblioteca|batch|modulo-compartilhado",
-  "bibliotecas": {json.dumps(document_context.get('technology', {}).get('technologies', []), ensure_ascii=False)},
-  "seguranca": {{
+  "main_language": "{document_context.get('classification', {}).get('main_language') or 'nao_identificado'}",
+  "component_type": "servico|biblioteca|batch|modulo-compartilhado",
+  "libraries": {json.dumps(document_context.get('technology', {}).get('technologies', []), ensure_ascii=False)},
+  "security": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite o tipo e provedor de autenticação encontrado"
+    "detail": "cite o tipo e provedor de autenticação encontrado"
   }},
-  "bancos_de_dados": {{
+  "databases": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite os bancos de dados encontrados"
+    "detail": "cite os bancos de dados encontrados"
   }},
-  "mensageria": {{
+  "messaging": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite qual dos 4 sinais (TOPIC nas integrações / SASL-KAFKA na autenticação / KAFKA em enabled_features / porta 9093) foi usado, ou a ausência de todos"
+    "detail": "cite qual dos 4 sinais (TOPIC / SASL-KAFKA / KAFKA em enabled_features / porta 9093) foi usado, ou a ausência de todos"
   }},
-  "tecnologia_principal": {{
+  "main_technology": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite o framework principal encontrado"
+    "detail": "cite o framework principal encontrado"
   }},
-  "uso_sicredi_flow": {{
+  "sicredi_flow_usage": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite as funcionalidades de plataforma (Consul, Vault, Kubernetes etc) encontradas"
+    "detail": "cite as funcionalidades de plataforma (Consul, Vault, Kubernetes etc) encontradas"
   }},
-  "armazenamento_objetos": {{
+  "object_storage": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "identifique o provedor encontrado (AWS S3, Azure Blob Storage, Google Cloud Storage, ou outro), ou a ausência de evidência"
+    "detail": "identifique o provedor encontrado, ou a ausência de evidência"
   }},
-  "containerizacao": {{
+  "containerization": {{
     "status": "confirmado|parcial|nao_identificado",
-    "detalhe": "cite a evidência do pipeline de deploy encontrada"
+    "detail": "cite a evidência do pipeline de deploy encontrada"
   }},
-  "limitacoes_detectadas": ["APENAS lacunas objetivas nos dados — lista vazia [] se não houver"],
+  "detected_limitations": ["APENAS lacunas objetivas nos dados — lista vazia [] se não houver"],
   "tags": ["tags geradas com base na análise — mínimo 3"],
-  "classificacao_maturidade": "inicial|em-desenvolvimento|maduro|legado",
-  "nivel_documentacao": "inexistente|basico|intermediario|completo",
-  "resumo_executivo": "resumo de 1-2 frases para exibição no catálogo",
-  "sugestoes_melhoria": ["APENAS julgamento técnico/recomendações — até 3"],
+  "maturity_classification": "inicial|em-desenvolvimento|maduro|legado",
+  "documentation_level": "inexistente|basico|intermediario|completo",
+  "executive_summary": "resumo de 1-2 frases para exibição no catálogo",
+  "improvement_suggestions": ["APENAS julgamento técnico/recomendações — até 3"],
   "team_id": {json.dumps(document_context.get('ownership', {}).get('team_id'), ensure_ascii=False)},
-  "time_responsavel": {json.dumps(document_context.get('ownership', {}).get('responsible_team'), ensure_ascii=False)},
-  "projeto": {json.dumps(document_context.get('ownership', {}).get('project') or None, ensure_ascii=False)},
-  "tribo": {json.dumps(document_context.get('ownership', {}).get('tribe', {}).get('name'), ensure_ascii=False)},
-  "criticidade": {json.dumps(document_context.get('quality', {}).get('criticality'), ensure_ascii=False)},
+  "responsible_team": {json.dumps(document_context.get('ownership', {}).get('responsible_team'), ensure_ascii=False)},
+  "project": {json.dumps(document_context.get('ownership', {}).get('project') or None, ensure_ascii=False)},
+  "tribe": {json.dumps(document_context.get('ownership', {}).get('tribe', {}).get('name'), ensure_ascii=False)},
+  "criticality": {json.dumps(document_context.get('quality', {}).get('criticality'), ensure_ascii=False)},
   "environment": {json.dumps(document_context.get('runtime', {}).get('resources_by_environment'), ensure_ascii=False)},
-  "status_aplicacao": {json.dumps(document_context.get('status'), ensure_ascii=False)},
-  "categoria_aplicacao": {json.dumps(document_context.get('classification', {}).get('application_type'), ensure_ascii=False)}
+  "application_status": {json.dumps(document_context.get('status'), ensure_ascii=False)},
+  "application_category": {json.dumps(document_context.get('classification', {}).get('application_type'), ensure_ascii=False)}
 }}"""

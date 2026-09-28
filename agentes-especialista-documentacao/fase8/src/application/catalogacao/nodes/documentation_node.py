@@ -1,9 +1,12 @@
 """
 nodes/documentation_node.py
 -----------------------------
-Terceiro nó do grafo (Fase 8) — gera a documentação em formato wiki
+Terceiro nó do grafo (Fase 8/9) — gera a documentação em formato wiki
 multi-seção via LLM OpenAI, a partir do document_context estruturado
 vindo do atlas-apis-ingestao.
+
+Fase 9: nomes de campo do documento persistido migrados para inglês
+        (ver docs/RENOMEACAO_CAMPOS.md).
 """
 
 import json
@@ -41,7 +44,9 @@ def _chamar_llm_wiki(document_context: dict[str, Any]) -> dict[str, Any]:
         document_context: dados buscados pelo ingestao_fetch_node
 
     Returns:
-        dict estruturado no formato da collection documentos_gerados_previas
+        dict estruturado no formato da collection documentos_gerados_previas,
+        com nomes de campo em inglês (title, sections, data_source,
+        generated_at, generated_by, tokens_used)
     """
     settings = get_settings()
 
@@ -72,21 +77,21 @@ def _chamar_llm_wiki(document_context: dict[str, Any]) -> dict[str, Any]:
             f"Conteúdo retornado: {texto_limpo[:200]}..."
         ) from exc
 
-    secoes = resultado_wiki.get("secoes", [])
-    logger.info("[documentation_node] ✓ LLM gerou %d seção(ões)", len(secoes))
+    sections = resultado_wiki.get("sections", [])
+    logger.info("[documentation_node] ✓ LLM gerou %d seção(ões)", len(sections))
 
     return {
         "event_id": document_context.get("component_name"),
         "repository": document_context.get("repository"),
         "component_name": document_context.get("component_name"),
-        "titulo": resultado_wiki.get(
-            "titulo_geral", f"{document_context.get('component_name')} — Documentação"
+        "title": resultado_wiki.get(
+            "general_title", f"{document_context.get('component_name')} — Documentação"
         ),
-        "secoes": secoes,
-        "fonte_dados": "atlas_ingestao_api.document_context",
-        "gerado_em": datetime.now(timezone.utc).isoformat(),
-        "gerado_por": settings.openai_model,
-        "tokens_utilizados": resposta.usage_metadata,
+        "sections": sections,
+        "data_source": "atlas_ingestao_api.document_context",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_by": settings.openai_model,
+        "tokens_used": resposta.usage_metadata,
     }
 
 
@@ -98,7 +103,9 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
         state: Estado atual com document_context validado
 
     Returns:
-        dict com secoes_documentacao preenchido pela LLM
+        dict com secoes_documentacao preenchido pela LLM (nome interno
+        do estado — não confundir com o campo "sections" do documento
+        persistido; ver state.py)
     """
     logger.info("-" * 55)
     logger.info("[documentation_node] Gerando documentação wiki via LLM OpenAI")
@@ -120,14 +127,14 @@ def documentation_node(state: DocumentacaoState) -> dict[str, Any]:
             "[documentation_node] ✓ Documentação gerada para: '%s'",
             documento.get("component_name"),
         )
-        for secao in documento.get("secoes", []):
+        for secao in documento.get("sections", []):
             logger.info(
                 "[documentation_node]   • Seção %s: '%s'",
-                secao.get("ordem"),
-                secao.get("titulo"),
+                secao.get("order"),
+                secao.get("title"),
             )
         logger.info(
-            "[documentation_node] ✓ Gerado por: '%s'", documento.get("gerado_por")
+            "[documentation_node] ✓ Gerado por: '%s'", documento.get("generated_by")
         )
         logger.info("[documentation_node] ✓ Seguindo para cataloging_node")
 
